@@ -1,0 +1,75 @@
+# =============================================================================
+# brain self-host STARTER — brain-edge (HTTP/JSON) + brain (the database)
+# =============================================================================
+#
+# This is a starting point, not a turnkey deploy. Read the comments and adapt
+# to your host (model paths, LLM keys, resource limits) before relying on it.
+#
+#   your app ──HTTP/JSON──▶ brain-edge ──wire/CBOR──▶ brain
+#
+# Bring it up from THIS directory:
+#     docker compose up
+# (Compose resolves `context: ..` to the arc-labs parent so brain-edge's
+#  ../brain-sdk/rust path dependency is inside the build context.)
+
+services:
+  # ---------------------------------------------------------------------------
+  # brain-edge — the HTTP/JSON front door. Built from this repo.
+  # ---------------------------------------------------------------------------
+  brain-edge:
+    build:
+      # Context is the arc-labs PARENT so both brain-edge/ and its sibling
+      # brain-sdk/ (the `../brain-sdk/rust` path dep) are COPY-able.
+      context: ..
+      dockerfile: brain-edge/Dockerfile
+    image: brain-edge:latest
+    ports:
+      # host:container — the HTTP/JSON API.
+      - "8080:8080"
+    environment:
+      # Env var names + defaults come straight from src/config/mod.rs.
+      BRAIN_EDGE_POOL_SIZE: "4"             # pool width per credential
+      RUST_LOG: "brain_edge=info"           # log filter
+      BRAIN_ADDR: "brain:7878"       # Brain wire addr (service DNS name)
+      BRAIN_EDGE_LISTEN: "0.0.0.0:8080"     # HTTP listen addr
+    depends_on:
+      - brain
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # brain — the memory database. NOT built here.
+  #
+  # Brain is Linux-only (glommio/io_uring) and lives in a DIFFERENT repo
+  # (~/Desktop/brain). You must build/provide this image yourself, e.g.:
+  #     cd ~/Desktop/brain && docker build -t brain:latest .
+  # then re-run `docker compose up`. The `image:` below is a placeholder tag.
+  # ---------------------------------------------------------------------------
+  brain:
+    image: brain:latest
+    # io_uring needs an unrestricted seccomp profile or the shard runtime traps.
+    security_opt:
+      - "seccomp:unconfined"
+    ports:
+      # Expose the wire port the edge connects to (also handy for the native
+      # brain-db-sdk client / brain-shell). host:container.
+      - "7878:7878"
+    environment:
+      # The embedding model dir INSIDE the container (bind-mounted below).
+      BRAIN_EMBED_MODEL_DIR: "/models/bge-small"
+      # NOTE: rerank / classifier (GLiNER) / llm tiers HARD-FAIL at boot if
+      # they can't load. Either provide their models + a valid LLM api key
+      # (e.g. BRAIN__LLM__API_KEY=...) here, or disable the optional ones in
+      # your brain config. An empty [llm] api_key is a fatal startup
+      # error regardless of extractor flags — set it before first boot.
+      # BRAIN__LLM__API_KEY: "sk-..."
+    volumes:
+      # Bind-mount the embedding model from the host into the model dir above.
+      # Point the left side at your local BGE-small checkout.
+      - "./models/bge-small:/models/bge-small:ro"
+      # Persistent data dir (WAL, arena, redb, indexes) on a named volume.
+      - "brain-data:/data"
+    restart: unless-stopped
+
+volumes:
+  # Brain's durable state. Survives `docker compose down` (use `down -v` to wipe).
+  brain-data:

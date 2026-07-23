@@ -1,0 +1,43 @@
+[package]
+name = "brain-edge"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
+
+[lib]
+name = "brain_edge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "brain-edge"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+# Cross-cutting HTTP middleware for the self-host binary: per-request tracing,
+# a request timeout, an explicit body-size cap, and Authorization-header
+# redaction. The library router stays middleware-free so a host app layers its
+# own; these are applied only in `run()`.
+tower-http = { version = "0.6", features = [
+    "trace",
+    "timeout",
+    "limit",
+    "sensitive-headers",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-trait = "0.1"
+# Lock-free ArcSwap for the per-credential pool cache's hot path. Already a
+# transitive dep via the SDK; declared directly because BrainPool uses it.
+arc-swap = "1"
+
+# The wire client to Brain. brain-edge is axum on top of the Brain SDK — it does
+# not re-implement the wire protocol, it reuses the SDK that already speaks it.
+brain-db-sdk = { path = "../brain-sdk/rust" }
+
+[lints.clippy]
+all = "warn"
