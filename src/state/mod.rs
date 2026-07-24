@@ -99,4 +99,11 @@ impl EdgeState {
     pub fn pool(&self) -> &BrainPool {
         &self.inner.pool
     }
+
+    /// The injected metering sink, shared. The wire proxy reuses it so wire-path
+    /// ops meter through the same sink as the HTTP data plane.
+    #[must_use]
+    pub fn meter(&self) -> Arc<dyn MeteringSink> {
+        Arc::clone(&self.inner.meter)
+    }
 }

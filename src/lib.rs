@@ -23,6 +23,7 @@ pub mod error;
 pub mod pool;
 pub mod port;
 pub mod state;
+pub mod wire_proxy;
 
 pub use config::EdgeConfig;
 pub use error::ApiError;
@@ -32,6 +33,7 @@ pub use port::{
     ResolvedCredential,
 };
 pub use state::EdgeState;
+pub use wire_proxy::{RateLimitConfig, WireProxyConfig};
 
 /// The per-request effective-identity selector the gateway sets when running a
 /// [`BrainPool::shared`] service pool: build one with `ActAs { namespace,
@@ -49,7 +51,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{error, info};
 
 /// Run the self-host edge: build default state (bearer passthrough, no
 /// metering), bind the listener, and serve until shutdown.
@@ -64,7 +66,31 @@ pub async fn run(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = config.listen_addr;
     let request_timeout = Duration::from_secs(config.request_timeout_secs);
     let max_body_bytes = config.max_body_bytes;
+    // Wire-proxy settings, captured before `config` is moved into the state.
+    let wire_listen_addr = config.wire_listen_addr;
+    let brain_addr = config.brain_addr;
+    let wire_rate = RateLimitConfig {
+        capacity: config.wire_rate_capacity,
+        refill_per_sec: config.wire_rate_refill_per_sec,
+    };
     let state = EdgeState::new(config);
+
+    // The transparent wire-protocol proxy is a second listener alongside HTTP.
+    // Opt-in (only when an address is configured); it reuses the state's metering
+    // sink so wire-path ops meter through the same sink as the HTTP data plane.
+    if let Some(wire_addr) = wire_listen_addr {
+        let meter = state.meter();
+        let wcfg = WireProxyConfig {
+            wire_listen_addr: wire_addr,
+            brain_addr,
+            rate: wire_rate,
+        };
+        tokio::spawn(async move {
+            if let Err(e) = wire_proxy::serve(wcfg, meter).await {
+                error!(error = %e, "wire proxy listener exited");
+            }
+        });
+    }
 
     // Drop credential pools that have gone idle past their TTL. Runs off the
     // request path so a long-lived self-host process serving many credentials

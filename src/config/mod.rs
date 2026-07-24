@@ -22,6 +22,18 @@ pub struct EdgeConfig {
     /// Hard cap on request body size, in bytes. Bodies over this are rejected
     /// with `413 Payload Too Large` before the handler runs.
     pub max_body_bytes: usize,
+    /// Optional address for the transparent wire-protocol proxy listener. When
+    /// `Some`, the edge serves the Brain binary wire protocol here (in addition
+    /// to the HTTP data plane) — a customer SDK points at this address with its
+    /// own Brain key and the edge splices frames to Brain untouched. `None`
+    /// (the default) leaves the proxy off; the edge is HTTP-only.
+    pub wire_listen_addr: Option<SocketAddr>,
+    /// Wire-proxy per-credential rate-limit burst ceiling. `0` (the default)
+    /// disables rate limiting on the wire path.
+    pub wire_rate_capacity: u32,
+    /// Wire-proxy per-credential sustained rate, in ops per second, refilled into
+    /// the burst bucket. Ignored when `wire_rate_capacity` is `0`.
+    pub wire_rate_refill_per_sec: u32,
 }
 
 /// Parse an env var as `T`, or fail loudly. Unlike a silent `unwrap_or(default)`,
@@ -67,6 +79,10 @@ impl EdgeConfig {
     /// - `BRAIN_EDGE_IDLE_TTL_SECS`   — idle-sweep TTL in seconds (default `900`).
     /// - `BRAIN_EDGE_REQUEST_TIMEOUT_SECS` — per-request timeout (default `30`).
     /// - `BRAIN_EDGE_MAX_BODY_BYTES`  — request body cap (default `1048576` = 1 MiB).
+    /// - `BRAIN_EDGE_WIRE_LISTEN`     — wire-proxy listen addr, `ip:port` or
+    ///                                  `host:port` (unset = wire proxy off).
+    /// - `BRAIN_EDGE_WIRE_RATE_CAPACITY`      — per-credential burst (default `0` = off).
+    /// - `BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC`— per-credential ops/sec refill (default `0`).
     ///
     /// # Errors
     /// Returns a message if an address fails to parse/resolve, a numeric var is
@@ -80,6 +96,15 @@ impl EdgeConfig {
         let idle_ttl_secs = parse_env::<u64>("BRAIN_EDGE_IDLE_TTL_SECS", 900)?;
         let request_timeout_secs = parse_env::<u64>("BRAIN_EDGE_REQUEST_TIMEOUT_SECS", 30)?;
         let max_body_bytes = parse_env::<usize>("BRAIN_EDGE_MAX_BODY_BYTES", 1024 * 1024)?;
+
+        // The wire proxy is opt-in: absent env var → HTTP-only, unchanged.
+        let wire_listen_addr = match std::env::var("BRAIN_EDGE_WIRE_LISTEN") {
+            Err(_) => None,
+            Ok(raw) => Some(resolve_addr("BRAIN_EDGE_WIRE_LISTEN", &raw)?),
+        };
+        let wire_rate_capacity = parse_env::<u32>("BRAIN_EDGE_WIRE_RATE_CAPACITY", 0)?;
+        let wire_rate_refill_per_sec =
+            parse_env::<u32>("BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC", 0)?;
 
         if pool_size == 0 {
             return Err("BRAIN_EDGE_POOL_SIZE must be >= 1".into());
@@ -104,6 +129,9 @@ impl EdgeConfig {
             idle_ttl_secs,
             request_timeout_secs,
             max_body_bytes,
+            wire_listen_addr,
+            wire_rate_capacity,
+            wire_rate_refill_per_sec,
         })
     }
 }
