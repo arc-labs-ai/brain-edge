@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = BrainClient::connect(wire_addr, Auth::Token(key.into_bytes())).await?;
     println!(
         "handshake through proxy OK: namespace={:?}",
-        client.session()
+        client.connection()
     );
 
     let text = "Ada prefers oat milk in her coffee.";

@@ -18,7 +18,7 @@ pub async fn whoami(
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
     state.record("whoami", &ident, Outcome::Ok);
-    Ok(Json(WhoamiDto::from(client.session())))
+    Ok(Json(WhoamiDto::from(client.connection())))
 }
 
 /// `GET /v1/capabilities` — what the connected shard supports.

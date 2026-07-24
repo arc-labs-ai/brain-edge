@@ -28,8 +28,8 @@ pub async fn encode(
     let client = state.client_for(&ident.credential).await?;
 
     let mut builder = EncodeBuilder::new(body.text);
-    if let Some(ctx) = body.context {
-        builder = builder.context(ctx);
+    if let Some(sess) = body.session {
+        builder = builder.session(sess);
     }
     if let Some(at) = body.occurred_at {
         builder = builder.occurred_at(at);

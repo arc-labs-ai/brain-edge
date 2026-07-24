@@ -16,9 +16,9 @@ use super::{hex_decode, hex_encode, mem_id_decimal, parse_memory_id};
 pub struct EncodeBody {
     /// The text to remember.
     pub text: String,
-    /// Optional context id.
+    /// Optional session id.
     #[serde(default)]
-    pub context: Option<u64>,
+    pub session: Option<u64>,
     /// Optional event time (unix nanos).
     #[serde(default)]
     pub occurred_at: Option<u64>,

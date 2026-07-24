@@ -1,7 +1,7 @@
 //! Identity + capability verbs: whoami / capabilities.
 
 use brain_db_sdk::wire::types::GetCapabilitiesResponse;
-use brain_db_sdk::SessionInfo;
+use brain_db_sdk::ConnectionInfo;
 use serde::Serialize;
 
 use super::uuid_string;
@@ -10,7 +10,7 @@ use super::uuid_string;
 #[derive(Debug, Serialize)]
 pub struct WhoamiDto {
     pub namespace: String,
-    pub agent_id: String,
+    pub space_id: String,
     pub permissions: PermissionsDto,
 }
 
@@ -25,12 +25,12 @@ pub struct PermissionsDto {
     pub can_admin: bool,
 }
 
-impl From<&SessionInfo> for WhoamiDto {
-    fn from(s: &SessionInfo) -> Self {
+impl From<&ConnectionInfo> for WhoamiDto {
+    fn from(s: &ConnectionInfo) -> Self {
         let p = &s.permissions;
         Self {
             namespace: s.namespace.clone(),
-            agent_id: uuid_string(&s.agent_id),
+            space_id: uuid_string(&s.space_id),
             permissions: PermissionsDto {
                 can_encode: p.can_encode,
                 can_recall: p.can_recall,

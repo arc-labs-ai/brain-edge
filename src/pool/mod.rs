@@ -32,7 +32,7 @@
 //!   as a trusted **service principal** (a `can_act_as` key). Every
 //!   [`BrainPool::client_for`] hands back a client from that single pool
 //!   regardless of the `credential` argument; the gateway then resolves each API
-//!   key to a `(namespace, agent_id)` and sets `act_as` per request so one
+//!   key to a `(namespace, space_id)` and sets `act_as` per request so one
 //!   connection pool serves every tenant. This mode is for the gateway only — the
 //!   self-host edge doesn't resolve keys to identities, so it stays per-credential.
 

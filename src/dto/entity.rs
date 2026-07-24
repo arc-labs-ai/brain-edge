@@ -41,7 +41,7 @@ pub struct ResolveEntityBody {
     pub candidate_name: String,
     /// Optional free-text context to disambiguate. Omitted → empty.
     #[serde(default)]
-    pub context: String,
+    pub resolution_context: String,
     /// Entity type hint; `0` (the default) resolves across every declared type.
     #[serde(default)]
     pub type_hint: u32,
@@ -59,7 +59,7 @@ impl ResolveEntityBody {
         }
         Ok(EntityResolveRequest {
             candidate_name,
-            context: self.context.clone(),
+            resolution_context: self.resolution_context.clone(),
             entity_type_hint: self.type_hint,
             allow_create: self.allow_create,
             request_id: brain_db_sdk::new_id(),
@@ -134,6 +134,7 @@ impl CreateEntityBody {
             canonical_name,
             aliases: self.aliases.clone(),
             attributes_blob: Vec::new(),
+            session_id: 0,
             request_id: brain_db_sdk::new_id(),
             act_as: None,
         })
@@ -433,7 +434,7 @@ mod entity_tests {
     fn resolve_body_maps_type_hint_and_rejects_blank() {
         assert!(ResolveEntityBody {
             candidate_name: " ".into(),
-            context: String::new(),
+            resolution_context: String::new(),
             type_hint: 0,
             allow_create: false,
         }
@@ -441,7 +442,7 @@ mod entity_tests {
         .is_err());
         let req = ResolveEntityBody {
             candidate_name: "Ada".into(),
-            context: "the mathematician".into(),
+            resolution_context: "the mathematician".into(),
             type_hint: 5,
             allow_create: true,
         }
@@ -449,7 +450,7 @@ mod entity_tests {
         .unwrap();
         assert_eq!(req.entity_type_hint, 5);
         assert!(req.allow_create);
-        assert_eq!(req.context, "the mathematician");
+        assert_eq!(req.resolution_context, "the mathematician");
     }
 
     #[test]

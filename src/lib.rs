@@ -37,7 +37,7 @@ pub use wire_proxy::{RateLimitConfig, WireProxyConfig};
 
 /// The per-request effective-identity selector the gateway sets when running a
 /// [`BrainPool::shared`] service pool: build one with `ActAs { namespace,
-/// agent_id }` (or the SDK request builders' `.act_as(..)`) to run each op as a
+/// space_id }` (or the SDK request builders' `.act_as(..)`) to run each op as a
 /// resolved tenant on behalf of the trusted service principal. Re-exported so a
 /// gateway consuming `brain_edge` need not also name `brain_db_sdk` directly.
 pub use brain_db_sdk::wire::types::ActAs;
