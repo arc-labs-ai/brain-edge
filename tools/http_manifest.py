@@ -121,7 +121,10 @@ def serde_attrs(attr_text: str) -> dict:
                 continue
             key, _, value = part.partition("=")
             key, value = key.strip(), value.strip().strip('"')
-            if key in ("default", "skip", "skip_serializing_if", "rename", "alias", "flatten"):
+            if key in (
+                "default", "skip", "skip_serializing_if", "rename", "alias",
+                "flatten", "tag", "rename_all",
+            ):
                 found[key] = value or True
     return found
 
@@ -140,11 +143,77 @@ def shape(ty: str) -> str:
         return "string"
     if ty == "bool":
         return "bool"
-    if re.match(r"^[ui]\d+$", ty):
+    if re.match(r"^[ui]\d+$", ty) or ty in ("usize", "isize"):
         return "int"
     if re.match(r"^f\d+$", ty):
         return "float"
     return ty  # a named DTO; resolved by the reader
+
+
+def parse_enums(text: str) -> tuple[dict, list]:
+    """Externally-tagged enum DTOs: `{"Variant": payload}` or a bare string."""
+    out: dict = {}
+    unparsed: list = []
+    for m in re.finditer(r"pub enum (\w+)\s*\{", text):
+        name = m.group(1)
+        # `#[serde(tag = "kind", rename_all = "snake_case")]` decides whether
+        # the JSON is `{"kind": "...", ...}` or externally tagged; a client
+        # cannot write the type without it.
+        head = text[max(0, m.start() - 300) : m.start()]
+        container = serde_attrs(head[head.rfind("#[serde") :] if "#[serde" in head else "")
+        brace = text.index("{", m.end() - 1)
+        depth = 0
+        for j in range(brace, len(text)):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+        else:
+            unparsed.append(f"enum {name}: unbalanced braces")
+            continue
+
+        variants = []
+        buf = ""
+        depth2 = 0
+        for raw in text[brace + 1 : j].split("\n"):
+            line = raw.strip()
+            if not line or line.startswith("#["):
+                continue
+            buf = (buf + " " + line).strip() if buf else line
+            depth2 += buf.count("(") - buf.count(")") + buf.count("{") - buf.count("}")
+            if depth2 > 0:
+                continue
+            item = buf.rstrip(",").strip()
+            buf = ""
+            if not item:
+                continue
+            vm = re.match(r"^(\w+)\s*\((.+)\)$", item)
+            if vm:
+                variants.append({"name": vm.group(1), "payload": shape(vm.group(2))})
+                continue
+            # Struct variants: `Text { value: String }`. These are the actual
+            # shape of the object/value DTOs, which serde renders with an
+            # adjacent tag (`#[serde(tag = "kind")]`) plus the variant's own
+            # fields, so a client needs the field list, not just the name.
+            vm = re.match(r"^(\w+)\s*\{(.*)\}$", item)
+            if vm:
+                fields = []
+                for part in vm.group(2).split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    fname, _, fty = part.partition(":")
+                    fields.append({"name": fname.strip(), "shape": shape(fty)})
+                variants.append({"name": vm.group(1), "fields": fields})
+                continue
+            if re.match(r"^\w+$", item):
+                variants.append({"name": item})
+            else:
+                unparsed.append(f"enum {name}: {item}")
+        out[name] = {"variants": variants, "serde": container}
+    return out, unparsed
 
 
 def parse_dtos(text: str) -> tuple[dict, list]:
@@ -208,10 +277,15 @@ def collect(src: Path) -> dict:
 
     dtos: dict = {}
     unparsed: list = []
+    enums: dict = {}
     for f in sorted((src / "dto").glob("*.rs")):
-        d, u = parse_dtos(f.read_text())
+        text = f.read_text()
+        d, u = parse_dtos(text)
         dtos.update(d)
         unparsed += [f"{f.name}: {x}" for x in u]
+        e, u2 = parse_enums(strip_line_comments(text))
+        enums.update(e)
+        unparsed += [f"{f.name}: {x}" for x in u2]
 
     for r in routes:
         sig = handlers.get(r["handler"])
@@ -220,9 +294,33 @@ def collect(src: Path) -> dict:
             continue
         r.update(sig)
 
+    # Validate the manifest against itself. An empty `unparsed` only means
+    # nothing FAILED to parse -- it says nothing about types the parser never
+    # looked for, which is how the enum DTOs disappeared without a trace. Any
+    # type a field references but that has no definition is reported here.
+    scalars = {"string", "bool", "int", "float"}
+    defined = set(dtos) | set(enums) | scalars
+
+    def leaf(sh: str) -> str:
+        while True:
+            m = re.match(r"^(?:opt|list)\((.*)\)$", sh)
+            if not m:
+                return sh
+            sh = m.group(1)
+
+    for owner, d in dtos.items():
+        for f in d["fields"]:
+            ty = leaf(f["shape"])
+            if ty not in defined:
+                unparsed.append(
+                    f"{owner}.{f['name']} references `{ty}`, which has no definition "
+                    "in this manifest"
+                )
+
     return {
         "routes": sorted(routes, key=lambda r: (r["path"], r["method"])),
         "dtos": dtos,
+        "enums": enums,
         "unparsed": unparsed,
     }
 
