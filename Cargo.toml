@@ -41,3 +41,9 @@ brain-db-sdk = { path = "../brain-sdk/rust" }
 
 [lints.clippy]
 all = "warn"
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives the router in-process, so the port tests
+# exercise the real routing + extractor stack without binding a socket.
+# Already in the lock graph via axum/tower-http, so this adds no download.
+tower = { version = "0.5", features = ["util"] }
