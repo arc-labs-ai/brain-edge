@@ -38,7 +38,7 @@ from it, so your key's scoping is honored end to end.
 | `DELETE` | `/v1/links`       | `{ source, target, kind }`                 | `{ source, target, kind, removed }` |
 | `POST`   | `/v1/plan`        | `{ start:{text\|memory_id}, goal:{…}, max_steps?, strategy? }` | `{ steps: [{ step_index, memory_id, text, transition_kind, confidence, estimated_distance_to_goal }] }` |
 | `POST`   | `/v1/reason`      | `{ observation:{text\|memory_id}, depth?, confidence_threshold?, max_inferences? }` | `{ inferences: [{ step_index, claim, supporting_memories, contradicting_memories, confidence, inference_kind }] }` |
-| `GET`    | `/v1/whoami`      | —                                          | `{ namespace, agent_id, permissions }` |
+| `GET`    | `/v1/whoami`      | —                                          | `{ namespace, space_id, permissions }` |
 | `GET`    | `/v1/capabilities`| —                                          | `{ rerank, llm_extractor, classifier_extractor, pattern_extractor, schema_namespaces, vector_dim }` |
 | `GET`    | `/health/live`    | —                                          | `200` (process is up) |
 | `GET`    | `/health/ready`   | —                                          | `200` when Brain is reachable, else `503` |
