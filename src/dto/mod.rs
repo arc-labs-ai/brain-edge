@@ -43,7 +43,7 @@ pub(crate) fn hex_encode(b: &[u8]) -> String {
 /// Decode a lowercase/uppercase-hex cursor string back to bytes.
 pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("cursor: odd-length hex".into());
     }
     (0..s.len())

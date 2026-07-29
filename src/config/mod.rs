@@ -73,14 +73,14 @@ impl EdgeConfig {
     ///
     /// - `BRAIN_EDGE_LISTEN`          — HTTP listen addr (default `0.0.0.0:8080`).
     /// - `BRAIN_ADDR`                 — Brain address, `ip:port` or `host:port`
-    ///                                  (default `127.0.0.1:7878`).
+    ///   (default `127.0.0.1:7878`).
     /// - `BRAIN_EDGE_POOL_SIZE`       — pool width per credential (default `4`).
     /// - `BRAIN_EDGE_MAX_CREDENTIALS` — cap on cached credentials (default `256`).
     /// - `BRAIN_EDGE_IDLE_TTL_SECS`   — idle-sweep TTL in seconds (default `900`).
     /// - `BRAIN_EDGE_REQUEST_TIMEOUT_SECS` — per-request timeout (default `30`).
     /// - `BRAIN_EDGE_MAX_BODY_BYTES`  — request body cap (default `1048576` = 1 MiB).
     /// - `BRAIN_EDGE_WIRE_LISTEN`     — wire-proxy listen addr, `ip:port` or
-    ///                                  `host:port` (unset = wire proxy off).
+    ///   `host:port` (unset = wire proxy off).
     /// - `BRAIN_EDGE_WIRE_RATE_CAPACITY`      — per-credential burst (default `0` = off).
     /// - `BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC`— per-credential ops/sec refill (default `0`).
     ///

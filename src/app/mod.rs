@@ -14,7 +14,6 @@ use crate::state::EdgeState;
 /// around it (see [`crate::run`]); the hosted gateway merges it under its auth +
 /// metering middleware alongside its control-plane routes. It deliberately does
 /// NOT register `/health/*`, so a host app can own health without colliding.
-#[must_use]
 pub fn router(state: EdgeState) -> Router {
     Router::new()
         // identity
