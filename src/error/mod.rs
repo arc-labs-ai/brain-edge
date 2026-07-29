@@ -1,10 +1,10 @@
 //! HTTP error type — one JSON error envelope, mapped from Brain's taxonomy.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
-use brain_db_sdk::wire::types::ErrorCategoryWire;
 use brain_db_sdk::BrainError;
+use brain_db_sdk::wire::types::ErrorCategoryWire;
 use serde::Serialize;
 
 /// A structured API error. Serializes to `{ "error": { code, message } }` with

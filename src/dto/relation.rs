@@ -245,12 +245,14 @@ mod relation_tests {
             .unwrap(),
             RelationSide::To
         );
-        assert!(ListRelationsQuery {
-            direction: "sideways".into(),
-            ..Default::default()
-        }
-        .side()
-        .is_err());
+        assert!(
+            ListRelationsQuery {
+                direction: "sideways".into(),
+                ..Default::default()
+            }
+            .side()
+            .is_err()
+        );
     }
 
     #[test]

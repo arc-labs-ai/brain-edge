@@ -38,8 +38,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
@@ -95,10 +95,7 @@ fn lru_victim_key<'a>(
 /// The keys of every entry whose last-use is strictly before `cutoff`. Pure over
 /// `(key, last_used_secs)` recencies so the idle-sweep selection is testable
 /// without a live [`Pool`].
-fn stale_keys<'a>(
-    recencies: impl Iterator<Item = (&'a str, u64)>,
-    cutoff: u64,
-) -> Vec<String> {
+fn stale_keys<'a>(recencies: impl Iterator<Item = (&'a str, u64)>, cutoff: u64) -> Vec<String> {
     recencies
         .filter(|&(_, last_used)| last_used < cutoff)
         .map(|(key, _)| key.to_string())
@@ -403,7 +400,12 @@ mod tests {
     #[test]
     fn stale_keys_selects_only_entries_past_the_cutoff() {
         // cutoff 250: 100 and 200 are stale; 300 and 400 are fresh.
-        let recencies = [("old1", 100u64), ("fresh1", 300), ("old2", 200), ("fresh2", 400)];
+        let recencies = [
+            ("old1", 100u64),
+            ("fresh1", 300),
+            ("old2", 200),
+            ("fresh2", 400),
+        ];
         let mut stale = stale_keys(recencies.iter().copied(), 250);
         stale.sort();
         assert_eq!(stale, vec!["old1".to_string(), "old2".to_string()]);
@@ -436,7 +438,11 @@ mod tests {
             "service-key".to_string(),
         );
         assert_eq!(pool.shared_service_credential(), Some("service-key"));
-        assert_eq!(pool.cached_len(), 0, "shared mode keeps no per-credential cache");
+        assert_eq!(
+            pool.cached_len(),
+            0,
+            "shared mode keeps no per-credential cache"
+        );
         assert_eq!(pool.shared_pool_initialized(), Some(false), "built lazily");
     }
 

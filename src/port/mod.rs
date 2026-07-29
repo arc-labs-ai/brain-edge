@@ -8,7 +8,7 @@
 //! Both ports are trait objects held in [`crate::EdgeState`], so the router and
 //! handlers stay non-generic and the host app plugs in behavior at construction.
 
-use axum::http::{header, HeaderMap};
+use axum::http::{HeaderMap, header};
 
 use crate::error::ApiError;
 
@@ -49,11 +49,7 @@ impl Outcome {
     /// Classify a verb `Result` without inspecting its payload.
     #[must_use]
     pub fn of<T, E>(result: &Result<T, E>) -> Self {
-        if result.is_ok() {
-            Self::Ok
-        } else {
-            Self::Err
-        }
+        if result.is_ok() { Self::Ok } else { Self::Err }
     }
 }
 
@@ -101,7 +97,10 @@ impl MeteringSink for NoopMeter {
 /// # Errors
 /// Returns a `401` if neither header carries a non-empty token.
 pub fn bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
-    if let Some(raw) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+    if let Some(raw) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
         let stripped = raw
             .strip_prefix("Bearer ")
             .or_else(|| raw.strip_prefix("bearer "));

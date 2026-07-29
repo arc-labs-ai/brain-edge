@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use brain_db_sdk::verbs::{EncodeBuilder, RecallBuilder};
 use brain_db_sdk::{Auth, BrainClient};
-use brain_edge::{wire_proxy, MeteringSink, NoopMeter, RateLimitConfig, WireProxyConfig};
+use brain_edge::{MeteringSink, NoopMeter, RateLimitConfig, WireProxyConfig, wire_proxy};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

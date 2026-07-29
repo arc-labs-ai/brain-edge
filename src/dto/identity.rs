@@ -1,7 +1,7 @@
 //! Identity + capability verbs: whoami / capabilities.
 
-use brain_db_sdk::wire::types::GetCapabilitiesResponse;
 use brain_db_sdk::ConnectionInfo;
+use brain_db_sdk::wire::types::GetCapabilitiesResponse;
 use serde::Serialize;
 
 use super::uuid_string;

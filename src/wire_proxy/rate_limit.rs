@@ -86,7 +86,10 @@ impl RateLimiters {
     /// Number of distinct credentials with a live bucket (test/introspection).
     #[cfg(test)]
     fn tracked(&self) -> usize {
-        self.buckets.lock().expect("rate-limit mutex poisoned").len()
+        self.buckets
+            .lock()
+            .expect("rate-limit mutex poisoned")
+            .len()
     }
 }
 

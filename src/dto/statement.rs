@@ -51,7 +51,7 @@ fn kind_list_filter_byte(raw: &str) -> Result<u8, String> {
         other => {
             return Err(format!(
                 "kind must be one of: fact, preference, event, attribute, relation, directive (got `{other}`)"
-            ))
+            ));
         }
     })
 }
@@ -171,7 +171,10 @@ pub struct GetStatementQuery {
 }
 
 /// Build a wire `STATEMENT_GET` request from the path id and query.
-pub fn get_request_from(id: &str, query: &GetStatementQuery) -> Result<StatementGetRequest, String> {
+pub fn get_request_from(
+    id: &str,
+    query: &GetStatementQuery,
+) -> Result<StatementGetRequest, String> {
     Ok(StatementGetRequest {
         statement_id: parse_uuid(id)?,
         follow_supersession: query.follow_supersession,
@@ -295,28 +298,32 @@ mod statement_tests {
 
     #[test]
     fn list_query_rejects_bad_kind_and_subject() {
-        assert!(ListStatementsQuery {
-            subject: None,
-            predicate: String::new(),
-            kind: Some("nonsense".into()),
-            min_confidence: 0.0,
-            only_current: true,
-            include_tombstoned: false,
-            limit: None,
-        }
-        .to_request()
-        .is_err());
-        assert!(ListStatementsQuery {
-            subject: Some("nope".into()),
-            predicate: String::new(),
-            kind: None,
-            min_confidence: 0.0,
-            only_current: true,
-            include_tombstoned: false,
-            limit: None,
-        }
-        .to_request()
-        .is_err());
+        assert!(
+            ListStatementsQuery {
+                subject: None,
+                predicate: String::new(),
+                kind: Some("nonsense".into()),
+                min_confidence: 0.0,
+                only_current: true,
+                include_tombstoned: false,
+                limit: None,
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            ListStatementsQuery {
+                subject: Some("nope".into()),
+                predicate: String::new(),
+                kind: None,
+                min_confidence: 0.0,
+                only_current: true,
+                include_tombstoned: false,
+                limit: None,
+            }
+            .to_request()
+            .is_err()
+        );
     }
 
     #[test]
@@ -337,9 +344,8 @@ mod statement_tests {
         assert_eq!(json["kind"], "entity");
         assert!(json["id"].as_str().unwrap().contains('-'));
 
-        let value = StatementObjectDto::from(StatementObjectWire::Value(
-            StatementValueWire::Integer(42),
-        ));
+        let value =
+            StatementObjectDto::from(StatementObjectWire::Value(StatementValueWire::Integer(42)));
         let json = serde_json::to_value(&value).unwrap();
         assert_eq!(json["kind"], "value");
         assert_eq!(json["value"]["type"], "integer");

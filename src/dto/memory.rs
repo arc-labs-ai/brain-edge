@@ -1,12 +1,12 @@
 //! Memory verbs: encode / recall / forget.
 
+use brain_db_sdk::RecallAnswer;
 use brain_db_sdk::wire::types::{
     AnswerKindWire, EncodeGraphEdge, EncodeGraphNode, EncodeResponse, EncodeStageArtifact,
     EncodeStageGraph, EncodeStageKeywordField, EncodeStageRecord, ForgetResponse,
-    MemoryInspectResponse, MemoryListDirWire, MemoryListItem, MemoryListRequest, MemoryListSortWire,
-    MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
+    MemoryInspectResponse, MemoryListDirWire, MemoryListItem, MemoryListRequest,
+    MemoryListSortWire, MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
 };
-use brain_db_sdk::RecallAnswer;
 use serde::{Deserialize, Serialize};
 
 use super::{hex_decode, hex_encode, mem_id_decimal, parse_memory_id};
@@ -254,9 +254,7 @@ pub struct MemoryListPageDto {
 impl MemoryListPageDto {
     /// Assemble from the streamed frames: flatten items, carry the tail
     /// frame's cursor (hex, or omitted when empty).
-    pub fn from_frames(
-        frames: Vec<brain_db_sdk::wire::types::MemoryListResponseFrame>,
-    ) -> Self {
+    pub fn from_frames(frames: Vec<brain_db_sdk::wire::types::MemoryListResponseFrame>) -> Self {
         let next = frames
             .last()
             .map(|f| f.next_cursor.clone())

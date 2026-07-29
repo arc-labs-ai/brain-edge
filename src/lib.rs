@@ -29,8 +29,8 @@ pub use config::EdgeConfig;
 pub use error::ApiError;
 pub use pool::{BrainPool, BrainPoolConfig};
 pub use port::{
-    bearer_token, BearerResolver, CredentialResolver, MeterEvent, MeteringSink, NoopMeter, Outcome,
-    ResolvedCredential,
+    BearerResolver, CredentialResolver, MeterEvent, MeteringSink, NoopMeter, Outcome,
+    ResolvedCredential, bearer_token,
 };
 pub use state::EdgeState;
 pub use wire_proxy::{RateLimitConfig, WireProxyConfig};
@@ -45,7 +45,7 @@ pub use brain_db_sdk::wire::types::ActAs;
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::http::{header, HeaderName, StatusCode};
+use axum::http::{HeaderName, StatusCode, header};
 use axum::routing::get;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;

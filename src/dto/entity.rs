@@ -5,9 +5,9 @@
 //! fields, 16-byte entity/relation ids as hyphenated UUID strings.
 
 use brain_db_sdk::wire::types::{
-    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityListItem,
-    EntityListRequest, EntityResolveRequest, EntityResolveResponse, EntityView,
-    RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire, TraversalPathWire,
+    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityListItem, EntityListRequest,
+    EntityResolveRequest, EntityResolveResponse, EntityView, RelationTraverseRequest,
+    RelationTraverseResponseFrame, ResolutionOutcomeWire, TraversalPathWire,
 };
 use serde::{Deserialize, Serialize};
 
@@ -403,7 +403,7 @@ impl TraverseResponseDto {
 #[cfg(test)]
 mod entity_tests {
     use super::*;
-    use brain_db_sdk::wire::types::{TraversalStepWire, TraversalPathWire};
+    use brain_db_sdk::wire::types::{TraversalPathWire, TraversalStepWire};
 
     #[test]
     fn create_body_rejects_zero_type_and_blank_name() {
@@ -432,14 +432,16 @@ mod entity_tests {
 
     #[test]
     fn resolve_body_maps_type_hint_and_rejects_blank() {
-        assert!(ResolveEntityBody {
-            candidate_name: " ".into(),
-            resolution_context: String::new(),
-            type_hint: 0,
-            allow_create: false,
-        }
-        .to_request()
-        .is_err());
+        assert!(
+            ResolveEntityBody {
+                candidate_name: " ".into(),
+                resolution_context: String::new(),
+                type_hint: 0,
+                allow_create: false,
+            }
+            .to_request()
+            .is_err()
+        );
         let req = ResolveEntityBody {
             candidate_name: "Ada".into(),
             resolution_context: "the mathematician".into(),
@@ -467,7 +469,10 @@ mod entity_tests {
         };
         let dto = ResolveEntityResponseDto::from(resolved);
         assert_eq!(dto.outcome, "resolved");
-        assert_eq!(dto.entity_id.as_deref(), Some("00000000-0000-0000-0000-000000000009"));
+        assert_eq!(
+            dto.entity_id.as_deref(),
+            Some("00000000-0000-0000-0000-000000000009")
+        );
 
         let ambiguous = EntityResolveResponse {
             outcome: ResolutionOutcomeWire::Ambiguous,
@@ -518,12 +523,14 @@ mod entity_tests {
         assert_eq!(req.direction, 0);
         assert_eq!(req.max_depth, DEFAULT_TRAVERSE_DEPTH);
 
-        assert!(TraverseBody {
-            direction: "sideways".into(),
-            ..Default::default()
-        }
-        .to_request(id)
-        .is_err());
+        assert!(
+            TraverseBody {
+                direction: "sideways".into(),
+                ..Default::default()
+            }
+            .to_request(id)
+            .is_err()
+        );
         assert!(TraverseBody::default().to_request("not-a-uuid").is_err());
     }
 
@@ -538,7 +545,9 @@ mod entity_tests {
         };
         let frames = vec![
             RelationTraverseResponseFrame {
-                paths: vec![TraversalPathWire { steps: vec![step.clone()] }],
+                paths: vec![TraversalPathWire {
+                    steps: vec![step.clone()],
+                }],
                 total_paths: 2,
                 truncated: false,
                 is_final: false,

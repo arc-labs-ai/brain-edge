@@ -2,9 +2,9 @@
 
 pub mod handlers;
 
-use axum::routing::post;
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
+use axum::routing::post;
 
 use crate::state::EdgeState;
 
@@ -26,10 +26,7 @@ pub fn router(state: EdgeState) -> Router {
                 .get(handlers::memory::list)
                 .delete(handlers::memory::forget),
         )
-        .route(
-            "/v1/memories/{id}/inspect",
-            get(handlers::memory::inspect),
-        )
+        .route("/v1/memories/{id}/inspect", get(handlers::memory::inspect))
         .route("/v1/recall", post(handlers::memory::recall))
         // reasoning
         .route("/v1/plan", post(handlers::reasoning::plan))
@@ -52,10 +49,7 @@ pub fn router(state: EdgeState) -> Router {
             "/v1/entities/{id}/traverse",
             post(handlers::entity::traverse),
         )
-        .route(
-            "/v1/entities/{id}/relations",
-            get(handlers::relation::list),
-        )
+        .route("/v1/entities/{id}/relations", get(handlers::relation::list))
         // typed-graph statements
         .route("/v1/statements", get(handlers::statement::list))
         .route("/v1/statements/{id}", get(handlers::statement::get))

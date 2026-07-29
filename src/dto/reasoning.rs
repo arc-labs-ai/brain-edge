@@ -213,7 +213,11 @@ impl From<InferenceStep> for InferenceStepDto {
         Self {
             step_index: s.step_index,
             claim: s.claim,
-            supporting_memories: s.supporting_memories.iter().map(ToString::to_string).collect(),
+            supporting_memories: s
+                .supporting_memories
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             contradicting_memories: s
                 .contradicting_memories
                 .iter()

@@ -48,7 +48,9 @@ pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
     }
     (0..s.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| "cursor: invalid hex".to_string()))
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| "cursor: invalid hex".to_string())
+        })
         .collect()
 }
 
@@ -73,11 +75,22 @@ pub(crate) fn uuid_string(b: &[u8; 16]) -> String {
     let h = |i: usize| format!("{:02x}", b[i]);
     format!(
         "{}{}{}{}-{}{}-{}{}-{}{}-{}{}{}{}{}{}",
-        h(0), h(1), h(2), h(3),
-        h(4), h(5),
-        h(6), h(7),
-        h(8), h(9),
-        h(10), h(11), h(12), h(13), h(14), h(15),
+        h(0),
+        h(1),
+        h(2),
+        h(3),
+        h(4),
+        h(5),
+        h(6),
+        h(7),
+        h(8),
+        h(9),
+        h(10),
+        h(11),
+        h(12),
+        h(13),
+        h(14),
+        h(15),
     )
 }
 
@@ -117,7 +130,15 @@ mod tests {
         assert_eq!(s, "11000000-0000-0000-0000-00000000002a");
         assert_eq!(parse_uuid(&s).unwrap(), b);
         // Hyphen-free form parses identically.
-        assert_eq!(parse_uuid("110000000000000000000000000000 2a".replace(' ', "").as_str()).unwrap(), b);
+        assert_eq!(
+            parse_uuid(
+                "110000000000000000000000000000 2a"
+                    .replace(' ', "")
+                    .as_str()
+            )
+            .unwrap(),
+            b
+        );
     }
 
     #[test]

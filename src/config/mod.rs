@@ -103,8 +103,7 @@ impl EdgeConfig {
             Ok(raw) => Some(resolve_addr("BRAIN_EDGE_WIRE_LISTEN", &raw)?),
         };
         let wire_rate_capacity = parse_env::<u32>("BRAIN_EDGE_WIRE_RATE_CAPACITY", 0)?;
-        let wire_rate_refill_per_sec =
-            parse_env::<u32>("BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC", 0)?;
+        let wire_rate_refill_per_sec = parse_env::<u32>("BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC", 0)?;
 
         if pool_size == 0 {
             return Err("BRAIN_EDGE_POOL_SIZE must be >= 1".into());

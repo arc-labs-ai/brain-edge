@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use brain_db_sdk::transport::{read_frame, write_frame};
 use brain_db_sdk::wire::cbor::{from_cbor_bytes, to_cbor_bytes};
-use brain_db_sdk::wire::frame::{Frame, FLAG_EOS};
+use brain_db_sdk::wire::frame::{FLAG_EOS, Frame};
 use brain_db_sdk::wire::opcode::Opcode;
 use brain_db_sdk::wire::types::{
     AuthCredentials, AuthPayload, ErrorCategoryWire, ErrorCodeWire, ErrorResponse,
@@ -63,10 +63,7 @@ pub struct WireProxyConfig {
 ///
 /// # Errors
 /// Returns the bind error if `wire_listen_addr` can't be bound.
-pub async fn serve(
-    config: WireProxyConfig,
-    meter: Arc<dyn MeteringSink>,
-) -> std::io::Result<()> {
+pub async fn serve(config: WireProxyConfig, meter: Arc<dyn MeteringSink>) -> std::io::Result<()> {
     let listener = TcpListener::bind(config.wire_listen_addr).await?;
     info!(
         addr = %config.wire_listen_addr,

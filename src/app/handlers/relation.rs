@@ -5,8 +5,8 @@ use axum::http::HeaderMap;
 use axum::response::Json;
 
 use crate::dto::relation::{
-    GetRelationQuery, ListRelationsQuery, ListRelationsResponseDto, RelationDetailDto, RelationSide,
-    get_request_from,
+    GetRelationQuery, ListRelationsQuery, ListRelationsResponseDto, RelationDetailDto,
+    RelationSide, get_request_from,
 };
 use crate::error::ApiError;
 use crate::port::Outcome;
