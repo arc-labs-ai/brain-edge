@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# Cargo.toml has `brain-db-sdk = { path = "../brain-sdk/rust" }`, so nothing here
+# builds unless brain-sdk sits NEXT TO brain-edge on disk. Both jobs check the
+# two repos out as siblings under the workspace to reproduce that layout — the
+# same shape Dockerfile and docker-compose.yml already assume.
+#
+# When the SDK goes to crates.io and the path dep becomes a version dep, the
+# brain-sdk checkout steps can go.
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: brain-edge
+    steps:
+      - name: Checkout brain-edge
+        uses: actions/checkout@v4
+        with:
+          path: brain-edge
+
+      - name: Checkout brain-sdk (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: arc-labs-ai/brain-sdk
+          path: brain-sdk
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: brain-edge
+
+      # rustfmt.toml pins style_edition = "2024"; without it rustfmt would read
+      # the 2021 language edition from Cargo.toml and reformat the whole crate.
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --all-targets
+
+      # --locked so a drifting transitive dep fails here rather than in the
+      # release image, which builds --locked too.
+      - name: Build (release, locked)
+        run: cargo build --release --locked --bin brain-edge
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout brain-edge
+        uses: actions/checkout@v4
+        with:
+          path: brain-edge
+
+      - name: Checkout brain-sdk (path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: arc-labs-ai/brain-sdk
+          path: brain-sdk
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Context is the PARENT of both crates, not brain-edge — see the header
+      # comment in the Dockerfile. Build only; publishing is a separate concern.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: brain-edge/Dockerfile
+          push: false
+          load: true
+          tags: brain-edge:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Proves the entrypoint actually runs in the slim runtime stage — a shared
+      # library the builder had and the runtime doesn't only shows up here, never
+      # at compile time. /health/live is the static liveness route, so this needs
+      # no Brain behind it; /health/ready would, and would rightly fail.
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name edge -p 8080:8080 brain-edge:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health/live; then
+              echo "edge is live"
+              docker rm -f edge
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error title=Smoke test failed::/health/live never answered"
+          docker logs edge
+          docker rm -f edge
+          exit 1
