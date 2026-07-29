@@ -62,5 +62,15 @@ pub fn router(state: EdgeState) -> Router {
         .route("/v1/statements/{id}", get(handlers::statement::get))
         // typed-graph relations
         .route("/v1/relations/{id}", get(handlers::relation::get))
+        // schema. GET reads, POST merges, PUT replaces destructively — the
+        // method carries the difference, which is the clearest signal
+        // available that one of these three is not like the others.
+        .route(
+            "/v1/schema",
+            get(handlers::schema::get)
+                .post(handlers::schema::upload)
+                .put(handlers::schema::replace),
+        )
+        .route("/v1/schema/validate", post(handlers::schema::validate))
         .with_state(state)
 }

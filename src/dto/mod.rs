@@ -11,6 +11,7 @@ pub mod identity;
 pub mod memory;
 pub mod reasoning;
 pub mod relation;
+pub mod schema;
 pub mod statement;
 
 use brain_db_sdk::wire::types::WireMemoryId;
