@@ -110,6 +110,31 @@ It's operator introspection against the admin listener, not a data-plane call.
 | `BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC` | `0`        | Per-credential refill rate, ops/sec (`0` = no limit) |
 | `RUST_LOG`                      | `brain_edge=info`| Log filter                                          |
 
+## What a failing request looks like
+
+Every response carries an **`x-request-id`** header. A caller-supplied one is
+echoed, so an id assigned by a load balancer upstream survives the hop;
+otherwise the edge mints one. It is set on every response, including the ones
+generated before a handler runs — the `413` from the body cap and the `408` from
+the timeout.
+
+Errors are always the same envelope:
+
+```json
+{ "error": { "code": "bad_request", "message": "k must be 1..=100" } }
+```
+
+**A `4xx` message describes your request** and is safe to act on. **A `5xx`
+message does not**: statuses in that range mean the edge or the engine behind it
+is in trouble, and the detail — an OS error, a shard's internal state, a
+frame-codec fault — describes the edge's conversation with its database rather
+than anything the caller can fix. That detail is written to the log alongside the
+request id instead, so quoting the `x-request-id` from a failed call is enough
+for an operator to find it.
+
+A panicking handler returns a `500` in this same envelope rather than dropping
+the connection, and does not take the process down.
+
 **The wire proxy** is opt-in and separate from the HTTP surface. With
 `BRAIN_EDGE_WIRE_LISTEN` set, the edge also accepts raw Brain **wire/CBOR**
 connections on that port and splices frames to `BRAIN_ADDR` **byte-for-byte** —

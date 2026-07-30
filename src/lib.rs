@@ -47,18 +47,42 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderName, StatusCode, header};
+use axum::response::IntoResponse;
 use axum::routing::get;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
+use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 
+/// The header carrying the correlation id, in and out.
+const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+
+/// Turn a panicking handler into a `500` instead of a dropped connection.
+///
+/// Without this a panic aborts the task and hyper closes the socket with no
+/// response: the caller sees a connection reset with no status, no body, and
+/// nothing to quote in a bug report. The panic is logged, and the caller gets
+/// the same JSON envelope as every other failure — carrying the request id, so
+/// the two ends can be joined up afterwards.
+fn panic_to_response(err: &Box<dyn std::any::Any + Send + 'static>) -> axum::response::Response {
+    // `panic!` and `unwrap` produce a `&str` or a `String`; anything else is
+    // opaque and there is nothing useful to extract.
+    let detail: &str = err.downcast_ref::<&str>().copied().unwrap_or_else(|| {
+        err.downcast_ref::<String>()
+            .map_or("non-string panic payload", String::as_str)
+    });
+    ApiError::internal(format!("handler panicked: {detail}")).into_response()
+}
+
 /// Apply the transport-level protections every deployment needs.
 ///
-/// Header redaction, request tracing, a request timeout, and a request-body
-/// cap. [`run`] applies these; [`app::router`] deliberately does not, because a
-/// host application merges that router under its own middleware stack.
+/// Panic recovery, correlation ids, header redaction, request tracing, a
+/// request timeout, and a request-body cap. [`run`] applies these;
+/// [`app::router`] deliberately does not, because a host application merges
+/// that router under its own middleware stack.
 ///
 /// This exists so an embedder does not have to rediscover the list. The body
 /// cap is the one most easily missed: [`EdgeConfig::max_body_bytes`] is a
@@ -72,6 +96,9 @@ use tracing::{error, info};
 /// * `max_body_bytes` — an oversized body must not be buffered into memory.
 pub fn harden(router: Router, request_timeout: Duration, max_body_bytes: usize) -> Router {
     router
+        // A panic must not take the connection down silently. Innermost, so it
+        // wraps the handler rather than the middleware around it.
+        .layer(CatchPanicLayer::custom(|e| panic_to_response(&e)))
         // Redact credential headers so they never reach the log sink, then trace
         // every request. Order matters: mark-sensitive is outermost so it wraps
         // the trace layer's view of the headers.
@@ -85,6 +112,12 @@ pub fn harden(router: Router, request_timeout: Duration, max_body_bytes: usize) 
             request_timeout,
         ))
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        // Correlation, outermost so every response carries it — including the
+        // ones the layers above generate without reaching a handler (413 from
+        // the body cap, 408 from the timeout). A caller-supplied
+        // `x-request-id` is kept, so an id assigned upstream survives the hop.
+        .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))
+        .layer(SetRequestIdLayer::new(REQUEST_ID_HEADER, MakeRequestUuid))
 }
 
 /// Run the self-host edge: build default state (bearer passthrough, no

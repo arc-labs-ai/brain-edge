@@ -29,6 +29,13 @@ tower-http = { version = "0.6", features = [
     "timeout",
     "limit",
     "sensitive-headers",
+    # A panicking handler otherwise aborts the task and drops the connection
+    # with no response at all — the client sees a reset and the operator sees
+    # nothing tying it to a request.
+    "catch-panic",
+    # Correlation: every response carries an `x-request-id`, echoed from the
+    # caller when they supply one, so a client's bug report names a log line.
+    "request-id",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
