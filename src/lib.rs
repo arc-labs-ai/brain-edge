@@ -44,6 +44,7 @@ pub use brain_db_sdk::wire::types::ActAs;
 
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderName, StatusCode, header};
 use axum::routing::get;
@@ -52,6 +53,39 @@ use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info};
+
+/// Apply the transport-level protections every deployment needs.
+///
+/// Header redaction, request tracing, a request timeout, and a request-body
+/// cap. [`run`] applies these; [`app::router`] deliberately does not, because a
+/// host application merges that router under its own middleware stack.
+///
+/// This exists so an embedder does not have to rediscover the list. The body
+/// cap is the one most easily missed: [`EdgeConfig::max_body_bytes`] is a
+/// visible, validated knob, so a gateway author can reasonably assume the
+/// router already honours it. It does not — only this function does.
+///
+/// # Arguments
+///
+/// * `request_timeout` — a stalled Brain must not hang a request forever; past
+///   this the request is cut with an explicit `408`.
+/// * `max_body_bytes` — an oversized body must not be buffered into memory.
+pub fn harden(router: Router, request_timeout: Duration, max_body_bytes: usize) -> Router {
+    router
+        // Redact credential headers so they never reach the log sink, then trace
+        // every request. Order matters: mark-sensitive is outermost so it wraps
+        // the trace layer's view of the headers.
+        .layer(TraceLayer::new_for_http())
+        .layer(SetSensitiveRequestHeadersLayer::new([
+            header::AUTHORIZATION,
+            HeaderName::from_static("x-api-key"),
+        ]))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            request_timeout,
+        ))
+        .layer(RequestBodyLimitLayer::new(max_body_bytes))
+}
 
 /// Run the self-host edge: build default state (bearer passthrough, no
 /// metering), bind the listener, and serve until shutdown.
@@ -117,24 +151,11 @@ pub async fn run(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
         .route("/health/ready", get(readiness))
         .with_state(state.clone());
 
-    let app = app::router(state)
-        .merge(health)
-        // Redact credential headers so they never reach the log sink, then trace
-        // every request. Order matters: mark-sensitive is outermost so it wraps
-        // the trace layer's view of the headers.
-        .layer(TraceLayer::new_for_http())
-        .layer(SetSensitiveRequestHeadersLayer::new([
-            header::AUTHORIZATION,
-            HeaderName::from_static("x-api-key"),
-        ]))
-        // A stalled Brain must not hang a request forever; cut it at the timeout
-        // with an explicit 408.
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            request_timeout,
-        ))
-        // Cap request bodies so a hostile/oversized payload can't exhaust memory.
-        .layer(RequestBodyLimitLayer::new(max_body_bytes));
+    let app = harden(
+        app::router(state).merge(health),
+        request_timeout,
+        max_body_bytes,
+    );
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     info!(addr = %listen_addr, "listening");

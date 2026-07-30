@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
+repository = "https://github.com/arc-labs/brain-edge"
+readme = "README.md"
+keywords = ["brain", "memory", "database", "http", "edge"]
+categories = ["database", "web-programming::http-server"]
 
 [lib]
 name = "brain_edge"
@@ -39,8 +43,77 @@ arc-swap = "1"
 # not re-implement the wire protocol, it reuses the SDK that already speaks it.
 brain-db-sdk = { path = "../brain-sdk/rust" }
 
+# ---------------------------------------------------------------------------
+# Lints.
+#
+# Declared here rather than on the clippy command line so one definition covers
+# `cargo clippy`, CI, and rust-analyzer in the editor — a lint that only fires
+# in CI gets discovered at the worst moment. Mirrors `brain-sdk/rust`.
+#
+# Every allow below was produced by actually running
+# `-W clippy::pedantic -W clippy::nursery -W clippy::cargo` against this crate
+# (221 warnings). The count in each comment is what that lint produced, so the
+# next person can see it was considered rather than overlooked.
+# ---------------------------------------------------------------------------
+
+[lints.rust]
+# This crate terminates untrusted connections. It has no `unsafe` and must not
+# acquire any: `forbid` cannot be lifted by an inner `allow`.
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
 [lints.clippy]
-all = "warn"
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# -- allowed: documentation shape, not documentation absence ----------------
+# 86. Every fallible handler returns `ApiError`, whose variants and their HTTP
+# mapping are documented once on the type. Per-function `# Errors` sections
+# would be 86 restatements of the same mapping.
+missing_errors_doc = "allow"
+# 23. Wants backticks around identifiers in prose; its heuristic also flags
+# ordinary words and acronyms (HTTP, JSON, CBOR, brain-edge).
+doc_markdown = "allow"
+# 12. Style preference about where the first paragraph ends.
+too_long_first_doc_paragraph = "allow"
+
+# -- allowed: wrong for this code, on inspection ---------------------------
+# 20. Nursery. Suggests `const fn` for bodies that are const by accident today;
+# committing freezes implementation details into the API.
+missing_const_for_fn = "allow"
+# 20. Version skew inside the dependency graph (axum/tower/hyper transitives).
+# Not actionable from here and not a property of this code.
+multiple_crate_versions = "allow"
+# 8. Wants `Duration::from_secs(300)` written as `from_secs(5 * 60)` and
+# similar. The literals here mirror the config values they come from.
+duration_suboptimal_units = "allow"
+# 4. `SpacePermissions` and the list-query DTOs carry several bools because the
+# wire types they mirror do. The shape is not ours to restructure.
+struct_excessive_bools = "allow"
+# 4. Fires on constructors that take their config by value (`BrainPool::new`,
+# `AppState::with_ports`). Taking owned config is the intended API: the callee
+# stores it, and forcing a borrow would push a clone onto every caller.
+needless_pass_by_value = "allow"
+# 4. Suggests dropping guards earlier. Checked all four: the tokio guard in the
+# wire proxy is held deliberately to serialize frame writes, and the rest are
+# short synchronous map updates. None holds a guard across an `.await`, which
+# is the failure that would matter.
+significant_drop_tightening = "allow"
+# 8. `#[must_use]` on getters whose result a caller may legitimately ignore.
+must_use_candidate = "allow"
+# 2. Suggests folding an if-let into `map_or_else`; the explicit match reads
+# better where it fires (env-var parsing).
+option_if_let_else = "allow"
+
+# -- kept at warn, deliberately --------------------------------------------
+# Not listed above and therefore enforced: the cast lints (a silent truncation
+# in a proxy that forwards frames is a wire bug), missing_panics_doc,
+# format_push_string, map_unwrap_or, manual_let_else, unnested_or_patterns,
+# suboptimal_flops, cargo_common_metadata.
 
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the router in-process, so the port tests

@@ -27,6 +27,16 @@ pub struct EdgeState {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for EdgeState {
+    /// The ports are trait objects and the pool holds live connections, so this
+    /// prints the shape rather than the contents.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeState")
+            .field("pool", &self.inner.pool)
+            .finish_non_exhaustive()
+    }
+}
+
 struct Inner {
     pool: BrainPool,
     resolver: Arc<dyn CredentialResolver>,

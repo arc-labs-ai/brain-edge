@@ -73,6 +73,7 @@ pub trait MeteringSink: Send + Sync + 'static {
 
 /// The self-host default resolver: forward `Authorization: Bearer <key>` (or
 /// `X-API-Key`) to Brain, which resolves the identity itself.
+#[derive(Debug)]
 pub struct BearerResolver;
 
 #[async_trait::async_trait]
@@ -86,6 +87,7 @@ impl CredentialResolver for BearerResolver {
 }
 
 /// The self-host default sink: record nothing.
+#[derive(Debug)]
 pub struct NoopMeter;
 
 impl MeteringSink for NoopMeter {

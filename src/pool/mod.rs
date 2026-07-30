@@ -72,8 +72,7 @@ struct PoolEntry {
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The key of the least-recently-used entry to evict, or `None` if the cache is
@@ -133,6 +132,23 @@ enum Mode {
 pub struct BrainPool {
     config: BrainPoolConfig,
     mode: Mode,
+}
+
+impl std::fmt::Debug for BrainPool {
+    /// Reports the mode and the cache ceiling — never a credential, and never
+    /// the pooled connections themselves.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrainPool")
+            .field(
+                "mode",
+                &match self.mode {
+                    Mode::PerCredential(_) => "per-credential",
+                    Mode::Shared { .. } => "shared",
+                },
+            )
+            .field("max_credentials", &self.config.max_credentials)
+            .finish_non_exhaustive()
+    }
 }
 
 impl BrainPool {

@@ -1,6 +1,14 @@
 //! Memory-graph edge verbs (link / unlink) + the typed-graph export
 //! (GRAPH_FETCH).
 
+// The DTOs below mirror the HTTP contract one-for-one: the JSON field names are
+// the API, and `tools/http_manifest.py` emits every one of them — with its type
+// and serde attributes — into `contract/http-routes.json`, which the three SDK
+// clients are checked against. A doc comment on each of ~312 fields would
+// restate the field name; the ones that carry meaning beyond their name have
+// one written below.
+#![allow(missing_docs)]
+
 use brain_db_sdk::wire::types::{
     EdgeKindWire, GraphEdge, GraphFetchRequest, GraphFetchResponseFrame, GraphNode, LinkResponse,
     UnlinkResponse, WireMemoryId,

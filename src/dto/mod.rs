@@ -33,11 +33,13 @@ pub(crate) fn mem_id_decimal(b: &[u8; 16]) -> String {
 /// Lowercase-hex encode opaque bytes (keyset cursors) for a URL query param.
 /// Dependency-free; cursors are short (≤ ~60 bytes).
 pub(crate) fn hex_encode(b: &[u8]) -> String {
-    let mut s = String::with_capacity(b.len() * 2);
-    for byte in b {
-        s.push_str(&format!("{byte:02x}"));
-    }
-    s
+    use std::fmt::Write as _;
+    // `write!` into the buffer directly; `format!` allocates a String per byte.
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, byte| {
+            let _ = write!(s, "{byte:02x}");
+            s
+        })
 }
 
 /// Decode a lowercase/uppercase-hex cursor string back to bytes.

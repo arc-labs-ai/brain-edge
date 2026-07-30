@@ -173,9 +173,8 @@ async fn pump_customer_to_brain(
     let mut label: Option<String> = None;
 
     loop {
-        let frame = match read_frame(&mut cust_rd, &mut buf).await {
-            Ok(f) => f,
-            Err(_) => return,
+        let Ok(frame) = read_frame(&mut cust_rd, &mut buf).await else {
+            return;
         };
 
         // Handshake sniff — the ONLY place a payload is decoded, and only the AUTH

@@ -14,6 +14,16 @@ use crate::state::EdgeState;
 /// around it (see [`crate::run`]); the hosted gateway merges it under its auth +
 /// metering middleware alongside its control-plane routes. It deliberately does
 /// NOT register `/health/*`, so a host app can own health without colliding.
+///
+/// # What this router does NOT include
+///
+/// No transport-level protection is attached here — not the request-body cap,
+/// the request timeout, the credential-header redaction, or tracing. An
+/// embedder must apply them, and [`crate::harden`] does exactly that.
+///
+/// The body cap is the one most easily missed: [`crate::EdgeConfig`] exposes
+/// `max_body_bytes` as a validated knob, which makes it reasonable to assume
+/// the router already honours it. It does not.
 pub fn router(state: EdgeState) -> Router {
     Router::new()
         // identity

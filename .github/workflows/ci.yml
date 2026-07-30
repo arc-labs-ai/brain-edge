@@ -50,8 +50,10 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      # The lint set lives in Cargo.toml's `[lints]` so rust-analyzer enforces
+      # the same rules; `-D warnings` is what turns them into a gate.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test
         run: cargo test --all-targets
