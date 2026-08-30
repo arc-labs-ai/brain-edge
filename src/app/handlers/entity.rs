@@ -74,7 +74,7 @@ pub async fn get(
     let out = client.get_entity(&req).await;
     state.record("get_entity", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
-    Ok(Json(EntityDetailDto::from(resp.entity)))
+    Ok(Json(EntityDetailDto::from_get_response(resp)))
 }
 
 /// `POST /v1/entities/{id}/traverse` — walk the relation graph from an anchor

@@ -5,9 +5,10 @@
 //! fields, 16-byte entity/relation ids as hyphenated UUID strings.
 
 use brain_db_sdk::wire::types::{
-    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityListItem, EntityListRequest,
-    EntityResolveRequest, EntityResolveResponse, EntityView, RelationTraverseRequest,
-    RelationTraverseResponseFrame, ResolutionOutcomeWire, TraversalPathWire,
+    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse, EntityListItem,
+    EntityListRequest, EntityResolveRequest, EntityResolveResponse, EntityView,
+    RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire,
+    TraversalPathWire,
 };
 use serde::{Deserialize, Serialize};
 
@@ -177,6 +178,12 @@ pub struct EntityDetailDto {
     pub updated_at_unix_nanos: u64,
     /// Survivor id (UUID) if merged away; `null` otherwise.
     pub merged_into: Option<String>,
+    /// Merge-redirect chain walked by `ENTITY_GET` to reach this (surviving)
+    /// entity, oldest first, EXCLUDING the survivor itself. Empty on a direct
+    /// hit (the requested id was live) and on list/create responses, which
+    /// carry no redirect chain. For `A → B → C`, `GET /v1/entities/A` returns
+    /// entity `C` with `resolved_from = ["A", "B"]`.
+    pub resolved_from: Vec<String>,
 }
 
 impl From<EntityView> for EntityDetailDto {
@@ -190,6 +197,20 @@ impl From<EntityView> for EntityDetailDto {
             created_at_unix_nanos: v.created_at_unix_nanos,
             updated_at_unix_nanos: v.updated_at_unix_nanos,
             merged_into: merged_into_string(&v.merged_into),
+            // A bare view carries no redirect chain; only ENTITY_GET does.
+            resolved_from: Vec::new(),
+        }
+    }
+}
+
+impl EntityDetailDto {
+    /// Build from an `ENTITY_GET` response, surfacing the merge-redirect chain
+    /// (`resolved_from`) that a plain [`EntityView`] does not carry.
+    pub fn from_get_response(resp: EntityGetResponse) -> Self {
+        let resolved_from = resp.resolved_from.iter().map(uuid_string).collect();
+        Self {
+            resolved_from,
+            ..Self::from(resp.entity)
         }
     }
 }
@@ -428,6 +449,40 @@ mod entity_tests {
         assert_eq!(req.canonical_name, "Ada Lovelace"); // trimmed
         assert_eq!(req.entity_type_id, 1);
         assert!(req.attributes_blob.is_empty());
+    }
+
+    #[test]
+    fn entity_get_response_surfaces_resolved_from_chain() {
+        let mut survivor = [0u8; 16];
+        survivor[15] = 3; // C, the surviving entity
+        let mut a = [0u8; 16];
+        a[15] = 1;
+        let mut b = [0u8; 16];
+        b[15] = 2;
+        let view = EntityView {
+            entity_id: survivor,
+            entity_type_id: 1,
+            canonical_name: "Ada Lovelace".into(),
+            normalized_name: "ada lovelace".into(),
+            aliases: vec![],
+            attributes_blob: vec![],
+            mention_count: 4,
+            created_at_unix_nanos: 1,
+            updated_at_unix_nanos: 2,
+            merged_into: [0u8; 16],
+            embedding_version: 1,
+            flags: 0,
+        };
+        let resp = EntityGetResponse {
+            entity: view.clone(),
+            resolved_from: vec![a, b],
+        };
+        let dto = EntityDetailDto::from_get_response(resp);
+        assert_eq!(dto.entity_id, uuid_string(&survivor));
+        // The redirect chain is surfaced, oldest-first, as UUID strings.
+        assert_eq!(dto.resolved_from, vec![uuid_string(&a), uuid_string(&b)]);
+        // A bare view (list/create paths) carries no chain.
+        assert!(EntityDetailDto::from(view).resolved_from.is_empty());
     }
 
     #[test]
