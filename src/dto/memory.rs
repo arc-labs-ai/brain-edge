@@ -448,3 +448,277 @@ impl From<EncodeGraphEdge> for StageGraphEdgeDto {
         }
     }
 }
+
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use brain_db_sdk::RecallAnswer;
+    use brain_db_sdk::wire::types::{
+        EncodeGraphEdge, EncodeGraphNode, EncodeResponse, EncodeStageArtifact, EncodeStageGraph,
+        EncodeStageKeywordField, EncodeStageRecord, ForgetResponse, MemoryInspectResponse,
+        MemoryKindWire, MemoryListItem, MemoryListResponseFrame, MemoryResult,
+    };
+
+    fn sample_result(tag: u8, text: &str) -> MemoryResult {
+        MemoryResult {
+            memory_id: u128::from(tag),
+            text: text.into(),
+            similarity_score: 0.9,
+            confidence: 0.8,
+            salience: 0.5,
+            kind: MemoryKindWire::Semantic,
+            space_id: [tag; 16],
+            session_id: 0,
+            created_at_unix_nanos: 1,
+            last_accessed_at_unix_nanos: 1,
+            edges: None,
+            contributing_retrievers: vec![],
+            fused_score: 0.7,
+            rerank_score: None,
+            salience_initial: 0.5,
+            access_count: 0,
+            lsn: 1,
+            flags: 0,
+            consolidated_at_unix_nanos: None,
+            occurred_at_unix_nanos: None,
+            edges_out_count: 0,
+            edges_in_count: 0,
+            graph: None,
+        }
+    }
+
+    #[test]
+    fn list_query_clamps_limit_defaults_dir_and_rejects_bad_dir() {
+        // Over-max clamps; asc/desc parse; malformed dir is an error.
+        let over = MemoryListQuery {
+            limit: Some(9999),
+            cursor: None,
+            dir: None,
+            include_tombstoned: None,
+        };
+        let req = over.to_request().unwrap();
+        assert_eq!(req.limit, LIST_MAX_LIMIT);
+        assert!(matches!(req.dir, MemoryListDirWire::Desc)); // default
+        assert!(req.cursor.is_empty());
+        assert!(!req.include_tombstoned);
+
+        let asc = MemoryListQuery {
+            limit: None,
+            cursor: Some("2a00ff".into()),
+            dir: Some(" asc ".into()),
+            include_tombstoned: Some(true),
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(asc.limit, LIST_DEFAULT_LIMIT);
+        assert!(matches!(asc.dir, MemoryListDirWire::Asc));
+        assert_eq!(asc.cursor, vec![0x2a, 0x00, 0xff]); // hex-decoded
+        assert!(asc.include_tombstoned);
+
+        assert!(
+            MemoryListQuery {
+                limit: None,
+                cursor: None,
+                dir: Some("sideways".into()),
+                include_tombstoned: None,
+            }
+            .to_request()
+            .is_err()
+        );
+        // A malformed cursor is rejected too.
+        assert!(
+            MemoryListQuery {
+                limit: None,
+                cursor: Some("zz".into()),
+                dir: None,
+                include_tombstoned: None,
+            }
+            .to_request()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn forget_body_parses_decimal_id_and_rejects_junk() {
+        let ok = ForgetBody {
+            memory_id: "42".into(),
+            hard: true,
+        };
+        assert_eq!(ok.parse_id().unwrap(), 42u128);
+        assert!(
+            ForgetBody {
+                memory_id: "not-a-number".into(),
+                hard: false,
+            }
+            .parse_id()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn encode_response_maps_every_field_and_kind_byte() {
+        let resp = EncodeResponse {
+            memory_id: 7,
+            was_deduplicated: true,
+            salience: 0.42,
+            auto_edges_added: 3,
+            lsn: 99,
+            space_id: [0xAB; 16],
+            session_id: 5,
+            kind: MemoryKindWire::Consolidated,
+            created_at_unix_nanos: 1_700_000_000,
+            edges_out_count: 0,
+            embedding_model_fp: [0; 16],
+            pending_stages: vec![],
+            has_active_schema: true,
+            trace: None,
+        };
+        let dto = EncodeResponseDto::from(resp);
+        assert_eq!(dto.memory_id, "7"); // 128-bit id -> decimal string
+        assert!(dto.was_deduplicated);
+        assert_eq!(dto.salience.to_bits(), 0.42f32.to_bits());
+        assert_eq!(dto.kind, 2); // Consolidated
+        assert_eq!(dto.created_at_unix_nanos, 1_700_000_000);
+        assert_eq!(dto.auto_edges_added, 3);
+    }
+
+    #[test]
+    fn recall_answer_kind_maps_single_many_none() {
+        let cases = [
+            (AnswerKindWire::Single, "single"),
+            (AnswerKindWire::Many, "many"),
+            (AnswerKindWire::None, "none"),
+        ];
+        for (kind, expected) in cases {
+            let answer = RecallAnswer {
+                answer_kind: kind,
+                memories: vec![sample_result(0xAA, "hit")],
+            };
+            let dto = RecallResponseDto::from(answer);
+            assert_eq!(dto.answer_kind, expected);
+            assert_eq!(dto.memories.len(), 1);
+            assert_eq!(dto.memories[0].memory_id, "170"); // 0xAA decimal
+            assert_eq!(dto.memories[0].text, "hit");
+            assert_eq!(dto.memories[0].kind, 1); // Semantic
+        }
+    }
+
+    #[test]
+    fn forget_response_maps_fields() {
+        let dto = ForgetResponseDto::from(ForgetResponse {
+            memory_id: 42,
+            was_already_forgotten: true,
+            edges_removed: 4,
+        });
+        assert_eq!(dto.memory_id, "42");
+        assert!(dto.was_already_forgotten);
+        assert_eq!(dto.edges_removed, 4);
+    }
+
+    fn sample_list_item(tag: u8) -> MemoryListItem {
+        MemoryListItem {
+            memory_id: [tag; 16],
+            space_id: [0; 16],
+            session_id: 0,
+            text: "row".into(),
+            kind: 1,
+            state: 0,
+            created_at_unix_nanos: 10,
+            occurred_at_unix_nanos: 0,
+            last_accessed_at_unix_nanos: 11,
+            salience: 0.5,
+            access_count: 2,
+            source_request_id: [0; 16],
+            statement_count: 1,
+            entity_count: 2,
+            relation_count: 3,
+        }
+    }
+
+    #[test]
+    fn list_page_flattens_frames_and_hex_encodes_tail_cursor() {
+        // Two frames; the tail carries a resume cursor -> surfaced as hex.
+        let frames = vec![
+            MemoryListResponseFrame {
+                items: vec![sample_list_item(1)],
+                next_cursor: Vec::new(),
+                cumulative_count: 1,
+                is_final: false,
+            },
+            MemoryListResponseFrame {
+                items: vec![sample_list_item(2)],
+                next_cursor: vec![0x2a, 0xff],
+                cumulative_count: 2,
+                is_final: true,
+            },
+        ];
+        let dto = MemoryListPageDto::from_frames(frames);
+        assert_eq!(dto.items.len(), 2);
+        assert_eq!(dto.items[0].statement_count, 1);
+        assert_eq!(dto.items[1].relation_count, 3);
+        assert_eq!(dto.next_cursor.as_deref(), Some("2aff"));
+
+        // An empty tail cursor means "exhausted" -> omitted.
+        let done = MemoryListPageDto::from_frames(vec![MemoryListResponseFrame {
+            items: vec![sample_list_item(3)],
+            next_cursor: Vec::new(),
+            cumulative_count: 1,
+            is_final: true,
+        }]);
+        assert!(done.next_cursor.is_none());
+    }
+
+    #[test]
+    fn inspect_maps_stages_and_hex_encodes_graph_ids() {
+        let resp = MemoryInspectResponse {
+            found: true,
+            memory_id: [0; 16],
+            text: "hello".into(),
+            artifact: EncodeStageArtifact {
+                vector: vec![0.1, 0.2],
+                record: Some(EncodeStageRecord {
+                    memory_id: [0; 16],
+                    kind: 1,
+                    salience: 0.5,
+                    created_at_unix_nanos: 1,
+                    occurred_at_unix_nanos: 0,
+                    vector_dim: 384,
+                    text_len: 5,
+                    lsn: 7,
+                }),
+                hype_questions: vec!["who?".into()],
+                keyword_fields: vec![EncodeStageKeywordField {
+                    field: "text".into(),
+                    terms: vec!["hello".into()],
+                }],
+                graph: Some(EncodeStageGraph {
+                    nodes: vec![EncodeGraphNode {
+                        id: [0x11; 16],
+                        name: "Ada".into(),
+                        kind: "entity".into(),
+                        type_qname: "brain:Person".into(),
+                    }],
+                    edges: vec![EncodeGraphEdge {
+                        source: [0x11; 16],
+                        target: [0x22; 16],
+                        predicate: "born_in".into(),
+                        kind: "statement".into(),
+                        confidence: 0.9,
+                        event_at_unix_nanos: Some(123),
+                    }],
+                }),
+            },
+        };
+        let dto = MemoryInspectDto::from(resp);
+        assert!(dto.found);
+        assert_eq!(dto.text, "hello");
+        assert_eq!(dto.artifact.vector, vec![0.1, 0.2]);
+        assert_eq!(dto.artifact.record.as_ref().unwrap().vector_dim, 384);
+        assert_eq!(dto.artifact.hype_questions, vec!["who?".to_string()]);
+        let graph = dto.artifact.graph.unwrap();
+        assert_eq!(graph.nodes[0].id, "11".repeat(16)); // 16-byte id, lowercase hex
+        assert_eq!(graph.edges[0].source, "11".repeat(16));
+        assert_eq!(graph.edges[0].target, "22".repeat(16));
+        assert_eq!(graph.edges[0].event_at_unix_nanos, Some(123));
+    }
+}
