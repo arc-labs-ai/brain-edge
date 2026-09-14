@@ -65,6 +65,11 @@ pub struct RecallBody {
     pub max_results: Option<u32>,
     #[serde(default)]
     pub subject: Option<String>,
+    /// Read scope: `"space"` (default — the caller's own space) or
+    /// `"namespace"` (every space in the caller's namespace, fanned out across
+    /// shards and merged). Case-insensitive; anything else is rejected.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// One recalled memory in the response.
