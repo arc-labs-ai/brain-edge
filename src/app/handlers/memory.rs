@@ -69,7 +69,7 @@ pub async fn recall(
             other => {
                 return Err(ApiError::bad_request(format!(
                     "scope must be \"space\" or \"namespace\", got {other:?}"
-                )))
+                )));
             }
         };
         builder = builder.scope(scope);

@@ -189,6 +189,7 @@ impl SchemaGetQuery {
         SchemaGetRequest {
             namespace: self.namespace.clone(),
             version: self.version,
+            act_as: None,
         }
     }
 }
@@ -202,6 +203,7 @@ impl SchemaUploadBody {
             dry_run: self.dry_run,
             allow_breaking: self.allow_breaking,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         }
     }
 }
@@ -211,6 +213,7 @@ impl SchemaValidateBody {
     pub fn to_request(self) -> SchemaValidateRequest {
         SchemaValidateRequest {
             schema_document: self.schema_document,
+            act_as: None,
         }
     }
 }
@@ -233,6 +236,7 @@ impl SchemaReplaceBody {
             schema_document: self.schema_document,
             force_drop_existing: true,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
