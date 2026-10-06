@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
-repository = "https://github.com/arc-labs/brain-edge"
+repository = "https://github.com/arc-labs-ai/brain-edge"
 readme = "README.md"
 keywords = ["brain", "memory", "database", "http", "edge"]
 categories = ["database", "web-programming::http-server"]
@@ -48,7 +48,10 @@ arc-swap = "1"
 
 # The wire client to Brain. brain-edge is axum on top of the Brain SDK — it does
 # not re-implement the wire protocol, it reuses the SDK that already speaks it.
-brain-db-sdk = { path = "../brain-sdk/rust" }
+# `version` is required for `cargo publish` (a bare path dep is rejected); the
+# `path` keeps the sibling checkout authoritative for local + CI builds. Cargo
+# uses the path here and rewrites the dep to the version for consumers.
+brain-db-sdk = { version = "0.1", path = "../brain-sdk/rust" }
 
 # ---------------------------------------------------------------------------
 # Lints.
