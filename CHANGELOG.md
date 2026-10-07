@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.1](https://github.com/arc-labs-ai/brain-edge/compare/v0.1.0...v0.1.1) (2026-10-07)
+
+
+### Fixes
+
+* **ci:** grant attestations:write so provenance can be written ([0e09c62](https://github.com/arc-labs-ai/brain-edge/commit/0e09c62132e35ce7947f9ed34802fd023bcded53))
+
+
+### Build and tooling
+
+* add a workflow_dispatch hatch to the release workflow ([e74d995](https://github.com/arc-labs-ai/brain-edge/commit/e74d9951c2223047862ea5ca466812b414555d58))
+* build each architecture on a native runner instead of QEMU ([2fba206](https://github.com/arc-labs-ai/brain-edge/commit/2fba2061727fb2d44890937156a9632431b36039))
+* gate dev PRs and keep one CI run per commit ([d267c55](https://github.com/arc-labs-ai/brain-edge/commit/d267c55d5e9d7bd62d7da031b8828aa24e665843))
+* pin runners to ubuntu-26.04 instead of the floating label ([1d8a383](https://github.com/arc-labs-ai/brain-edge/commit/1d8a383f3cf79c7f273dddbafe019a89f620f81e))
+
 ## 0.1.0 (2026-10-07)
 
 
