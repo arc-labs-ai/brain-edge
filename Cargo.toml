@@ -48,10 +48,11 @@ arc-swap = "1"
 
 # The wire client to Brain. brain-edge is axum on top of the Brain SDK — it does
 # not re-implement the wire protocol, it reuses the SDK that already speaks it.
-# `version` is required for `cargo publish` (a bare path dep is rejected); the
-# `path` keeps the sibling checkout authoritative for local + CI builds. Cargo
-# uses the path here and rewrites the dep to the version for consumers.
-brain-db-sdk = { version = "0.1", path = "../brain-sdk/rust" }
+# Resolved from crates.io. This was a `path` dep on a sibling checkout until
+# brain-db-sdk 0.1.0 was published; the path made every build — local, CI and
+# Docker — depend on brain-sdk sitting next to this repo on disk, and meant we
+# compiled against working-tree source rather than the artifact consumers get.
+brain-db-sdk = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # Lints.

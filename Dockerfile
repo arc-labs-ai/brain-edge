@@ -2,28 +2,22 @@
 #
 # brain-edge — HTTP/JSON edge for the Brain memory database.
 #
-# IMPORTANT — build context is the arc-labs PARENT dir, not this crate:
-#   brain-edge's Cargo.toml has a path dependency on a SIBLING directory:
-#       brain-db-sdk = { path = "../brain-sdk/rust" }
-#   so a context scoped to brain-edge/ alone cannot see ../brain-sdk and the
-#   build fails. Build from the parent so both crates are COPY-able:
+# Build context is this crate:
 #
-#       cd /Users/dodo/Desktop/work/arc-labs
-#       docker build -f brain-edge/Dockerfile -t brain-edge:latest .
+#       docker build -t brain-edge:latest .
 #
-#   (docker-compose.yml already sets `context: ..` for you.)
+# It used to have to be the parent directory, because Cargo.toml carried a path
+# dependency on a sibling checkout (`brain-db-sdk = { path = "../brain-sdk/rust" }`)
+# that a context scoped here could not see. brain-db-sdk is on crates.io now, so
+# the dependency resolves from the registry and the context is just this crate.
 
 # ---- builder ---------------------------------------------------------------
 FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 
-# Preserve the relative layout the path dep expects: brain-edge/ next to
-# brain-sdk/, so `../brain-sdk/rust` from inside brain-edge/ resolves.
-COPY brain-edge/ ./brain-edge/
-COPY brain-sdk/  ./brain-sdk/
+COPY . .
 
-WORKDIR /build/brain-edge
 # --locked: build against the committed Cargo.lock so the image is reproducible
 # and a drifting transitive dep can't silently change what ships.
 RUN cargo build --release --locked --bin brain-edge
@@ -41,7 +35,7 @@ RUN useradd --system --create-home --uid 10001 brain
 USER brain
 
 # Just the compiled binary — no toolchain, no source.
-COPY --from=builder /build/brain-edge/target/release/brain-edge /usr/local/bin/brain-edge
+COPY --from=builder /build/target/release/brain-edge /usr/local/bin/brain-edge
 
 # HTTP listen port (BRAIN_EDGE_LISTEN default 0.0.0.0:8080).
 EXPOSE 8080

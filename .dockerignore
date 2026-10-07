@@ -1,10 +1,8 @@
 # Crate-root .dockerignore.
 #
-# NOTE: the Docker build context for brain-edge is the arc-labs PARENT dir
-# (see Dockerfile header + docker-compose.yml `context: ..`), so THIS file is
-# not the one Docker consults during the compose build — the parent
-# /Users/dodo/Desktop/work/arc-labs/.dockerignore governs that. This file is
-# kept for anyone building with brain-edge/ as the context directly.
+# The build context is this crate, so this is the file Docker consults. It was
+# not, while Cargo.toml carried a path dep on a sibling checkout and the context
+# had to be the parent directory; brain-db-sdk is on crates.io now.
 target/
 .git/
 .gitignore
