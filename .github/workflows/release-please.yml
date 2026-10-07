@@ -42,7 +42,19 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # The token matters. Events raised with the default GITHUB_TOKEN do not
+      # start workflow runs (GitHub's recursion guard), so a v* tag pushed under
+      # it would never reach release.yml: the tag and GitHub Release would be
+      # created and nothing would publish, with no error. brain-db hit exactly
+      # this on its v0.1.0 — tag created, release published, no image built —
+      # and force-pushing the identical tag by hand fired the workflow
+      # immediately, isolating the token as the cause.
+      #
+      # Falls back to GITHUB_TOKEN so the Release PR is still managed if the
+      # secret is absent, but then the tag will NOT publish and release.yml must
+      # be run by hand.
       - uses: googleapis/release-please-action@v5
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
