@@ -448,7 +448,7 @@ mod entity_tests {
         let req = ok.to_request().unwrap();
         assert_eq!(req.canonical_name, "Ada Lovelace"); // trimmed
         assert_eq!(req.entity_type_id, 1);
-        assert!(req.attributes_blob.is_empty());
+        assert_eq!(req.attributes_blob, [] as [u8; 0]);
     }
 
     #[test]
@@ -482,7 +482,7 @@ mod entity_tests {
         // The redirect chain is surfaced, oldest-first, as UUID strings.
         assert_eq!(dto.resolved_from, vec![uuid_string(&a), uuid_string(&b)]);
         // A bare view (list/create paths) carries no chain.
-        assert!(EntityDetailDto::from(view).resolved_from.is_empty());
+        assert_eq!(EntityDetailDto::from(view).resolved_from, [] as [String; 0]);
     }
 
     #[test]
@@ -551,7 +551,7 @@ mod entity_tests {
         };
         let req = q.to_request();
         assert_eq!(req.limit, MAX_LIST_LIMIT);
-        assert!(req.cursor.is_empty());
+        assert_eq!(req.cursor, [] as [u8; 0]);
         let none = ListEntitiesQuery::default().to_request();
         assert_eq!(none.limit, DEFAULT_LIST_LIMIT);
     }

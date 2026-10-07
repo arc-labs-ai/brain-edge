@@ -433,7 +433,10 @@ mod tests {
     #[test]
     fn stale_keys_is_empty_when_all_are_fresh() {
         let recencies = [("a", 300u64), ("b", 400)];
-        assert!(stale_keys(recencies.iter().copied(), 250).is_empty());
+        assert_eq!(
+            stale_keys(recencies.iter().copied(), 250),
+            [] as [String; 0]
+        );
     }
 
     #[test]

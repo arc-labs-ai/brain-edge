@@ -92,6 +92,11 @@ doc_markdown = "allow"
 too_long_first_doc_paragraph = "allow"
 
 # -- allowed: wrong for this code, on inspection ---------------------------
+# 1. Macro false positive. `#[async_trait]` expands a trait method into one
+# returning `Pin<Box<dyn Future>>`, which is already `#[must_use]`, and emits a
+# `#[must_use]` of its own on top. The attribute is generated, not written here,
+# so there is nothing in this crate to remove.
+double_must_use = "allow"
 # 20. Nursery. Suggests `const fn` for bodies that are const by accident today;
 # committing freezes implementation details into the API.
 missing_const_for_fn = "allow"

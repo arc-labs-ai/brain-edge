@@ -504,7 +504,7 @@ mod memory_tests {
         let req = over.to_request().unwrap();
         assert_eq!(req.limit, LIST_MAX_LIMIT);
         assert!(matches!(req.dir, MemoryListDirWire::Desc)); // default
-        assert!(req.cursor.is_empty());
+        assert_eq!(req.cursor, [] as [u8; 0]);
         assert!(!req.include_tombstoned);
 
         let asc = MemoryListQuery {

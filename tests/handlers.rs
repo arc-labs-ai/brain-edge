@@ -1298,6 +1298,6 @@ async fn schema_validate_reports_would_be_version() {
     assert_eq!(body["namespace"], "people");
     assert_eq!(body["would_be_version"], 4);
     let errs = body["validation_errors"].as_array().expect("errors array");
-    assert!(errs.is_empty());
+    assert_eq!(errs.as_slice(), [] as [serde_json::Value; 0]);
     assert_eq!(meter.ops(), vec!["validate_schema"]);
 }
