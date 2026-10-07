@@ -43,6 +43,21 @@ on:
   push:
     tags:
       - "v*"
+  # Escape hatch. A re-run replays the workflow as it existed AT THE TAG, so a
+  # workflow bug fixed afterwards cannot be recovered by re-running — v0.1.0's
+  # image published with no provenance because the job lacked
+  # `attestations: write`, and re-running would have replayed the same missing
+  # permission. A dispatch runs the workflow from the default branch against an
+  # existing tag, so fixes apply.
+  #
+  # Safe to re-run: both registries reject a version they already hold, so this
+  # is a no-op for whatever already published.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish (e.g. v0.1.0)"
+        required: true
+        type: string
 
 # No repo-wide write; each job opts into exactly the scope it needs.
 permissions:
@@ -51,6 +66,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Resolved once, read by every job. On a tag push github.ref_name is already
+  # `vX.Y.Z`; on a dispatch it would be the branch the hatch was fired from,
+  # which would make each job compare a branch name against a crate version.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   crates-io:
@@ -62,6 +81,8 @@ jobs:
       id-token: write # OIDC → crates.io trusted publishing
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -70,7 +91,7 @@ jobs:
 
       - name: Verify tag matches crate version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${RELEASE_TAG#v}"
           CRATE="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           echo "tag=$TAG crate=$CRATE"
           test "$TAG" = "$CRATE" || { echo "::error::tag $TAG != crate version $CRATE"; exit 1; }
@@ -103,10 +124,12 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Verify tag matches crate version
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          TAG="${RELEASE_TAG#v}"
           CRATE="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           echo "tag=$TAG crate=$CRATE"
           test "$TAG" = "$CRATE" || { echo "::error::tag $TAG != crate version $CRATE"; exit 1; }
@@ -138,9 +161,9 @@ jobs:
           # breaking changes. The guard turns it on by itself at 1.0, where a
           # floating major is the point.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }},enable=${{ !startsWith(env.RELEASE_TAG, 'v0.') }}
           labels: |
             org.opencontainers.image.title=brain-edge
             org.opencontainers.image.description=The HTTP/JSON edge for the Brain memory database
