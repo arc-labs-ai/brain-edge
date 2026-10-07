@@ -123,10 +123,19 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/arc-labs-ai/brain-edge
+          # `latest` is not listed: flavor defaults to latest=auto, which adds it
+          # for any non-prerelease semver tag. Listing it as well is what gave
+          # brain-db a duplicate `latest` in its tag set.
+          #
+          # The bare major tag is guarded. metadata-action emits `0` for a 0.x
+          # release, and under semver every 0.x MINOR may break — so a consumer
+          # pinned to `:0` would be carried from 0.1.0 straight through 0.2.0's
+          # breaking changes. The guard turns it on by itself at 1.0, where a
+          # floating major is the point.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
           labels: |
             org.opencontainers.image.title=brain-edge
             org.opencontainers.image.description=The HTTP/JSON edge for the Brain memory database
