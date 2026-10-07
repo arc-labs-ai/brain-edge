@@ -10,40 +10,18 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
-# Cargo.toml has `brain-db-sdk = { path = "../brain-sdk/rust" }`, so nothing here
-# builds unless brain-sdk sits NEXT TO brain-edge on disk. Both jobs check the
-# two repos out as siblings under the workspace to reproduce that layout — the
-# same shape Dockerfile and docker-compose.yml already assume.
-#
-# When the SDK goes to crates.io and the path dep becomes a version dep, the
-# brain-sdk checkout steps can go.
-
 jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: brain-edge
     steps:
-      - name: Checkout brain-edge
-        uses: actions/checkout@v4
-        with:
-          path: brain-edge
-
-      - name: Checkout brain-sdk (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: arc-labs-ai/brain-sdk
-          path: brain-sdk
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: brain-edge
 
       # rustfmt.toml pins style_edition = "2024"; without it rustfmt would read
       # the 2021 language edition from Cargo.toml and reformat the whole crate.
@@ -67,26 +45,15 @@ jobs:
     name: Docker image
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout brain-edge
-        uses: actions/checkout@v4
-        with:
-          path: brain-edge
+      - uses: actions/checkout@v7
 
-      - name: Checkout brain-sdk (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: arc-labs-ai/brain-sdk
-          path: brain-sdk
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      # Context is the PARENT of both crates, not brain-edge — see the header
-      # comment in the Dockerfile. Build only; publishing is a separate concern.
+      # Build only; publishing is a separate concern.
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
-          file: brain-edge/Dockerfile
           push: false
           load: true
           tags: brain-edge:ci

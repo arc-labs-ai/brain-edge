@@ -3,7 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
-use brain_db_sdk::wire::types::MemoryInspectRequest;
+use brain_db_sdk::wire::types::{MemoryInspectRequest, RecallScopeWire};
 use brain_db_sdk::{EncodeBuilder, ForgetBuilder, RecallBuilder};
 
 use crate::dto::memory::{
@@ -61,6 +61,18 @@ pub async fn recall(
     }
     if let Some(subject) = body.subject {
         builder = builder.subject(subject);
+    }
+    if let Some(scope) = body.scope.as_deref() {
+        let scope = match scope.to_ascii_lowercase().as_str() {
+            "space" => RecallScopeWire::Space,
+            "namespace" => RecallScopeWire::Namespace,
+            other => {
+                return Err(ApiError::bad_request(format!(
+                    "scope must be \"space\" or \"namespace\", got {other:?}"
+                )));
+            }
+        };
+        builder = builder.scope(scope);
     }
     let out = client.recall(&builder.build()).await;
     state.record("recall", &ident, Outcome::of(&out));

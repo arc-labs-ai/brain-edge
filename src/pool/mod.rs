@@ -224,7 +224,9 @@ impl BrainPool {
                             })
                     })
                     .await?;
-                Ok(shared.get())
+                // Reconnects a member Brain closed (e.g. on restart) instead
+                // of handing out the dead socket forever.
+                shared.get_healthy().await
             }
         }
     }
@@ -237,9 +239,10 @@ impl BrainPool {
         credential: &str,
     ) -> Result<Arc<BrainClient>, BrainError> {
         // Hot path: lock-free read. A built pool is the overwhelming common case.
-        if let Some(entry) = pools.load().get(credential) {
+        let hit = pools.load().get(credential).map(Arc::clone);
+        if let Some(entry) = hit {
             entry.last_used_secs.store(now_secs(), Ordering::Relaxed);
-            return Ok(entry.pool.get());
+            return entry.pool.get_healthy().await;
         }
 
         // Cold path: build outside any critical section so a slow handshake never
@@ -280,12 +283,12 @@ impl BrainPool {
         });
 
         // After the RCU the key is guaranteed present (ours or the winner's).
-        let client = pools
+        let entry = pools
             .load()
             .get(credential)
-            .map(|e| e.pool.get())
+            .map(Arc::clone)
             .expect("invariant: pool for credential is present after rcu insert");
-        Ok(client)
+        entry.pool.get_healthy().await
     }
 
     /// Drop credentials idle beyond `config.idle_ttl`. Called by a background
@@ -430,7 +433,10 @@ mod tests {
     #[test]
     fn stale_keys_is_empty_when_all_are_fresh() {
         let recencies = [("a", 300u64), ("b", 400)];
-        assert!(stale_keys(recencies.iter().copied(), 250).is_empty());
+        assert_eq!(
+            stale_keys(recencies.iter().copied(), 250),
+            [] as [String; 0]
+        );
     }
 
     #[test]

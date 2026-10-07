@@ -189,6 +189,7 @@ impl SchemaGetQuery {
         SchemaGetRequest {
             namespace: self.namespace.clone(),
             version: self.version,
+            act_as: None,
         }
     }
 }
@@ -202,6 +203,7 @@ impl SchemaUploadBody {
             dry_run: self.dry_run,
             allow_breaking: self.allow_breaking,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         }
     }
 }
@@ -211,6 +213,7 @@ impl SchemaValidateBody {
     pub fn to_request(self) -> SchemaValidateRequest {
         SchemaValidateRequest {
             schema_document: self.schema_document,
+            act_as: None,
         }
     }
 }
@@ -233,6 +236,143 @@ impl SchemaReplaceBody {
             schema_document: self.schema_document,
             force_drop_existing: true,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use brain_db_sdk::wire::types::SchemaUploadResponse;
+
+    fn sample_error() -> SchemaValidationErrorWire {
+        SchemaValidationErrorWire {
+            code: "E001".into(),
+            message: "undeclared type".into(),
+            line: 3,
+            column: 5,
+            length: 7,
+            severity: 2,
+        }
+    }
+
+    #[test]
+    fn get_query_forwards_namespace_and_version() {
+        let req = SchemaGetQuery {
+            namespace: "people".into(),
+            version: 4,
+        }
+        .to_request();
+        assert_eq!(req.namespace, "people");
+        assert_eq!(req.version, 4);
+    }
+
+    #[test]
+    fn upload_and_validate_bodies_build_requests() {
+        let up = SchemaUploadBody {
+            schema_document: "entity P {}".into(),
+            dry_run: true,
+            allow_breaking: true,
+        }
+        .to_request();
+        assert_eq!(up.schema_document, "entity P {}");
+        assert!(up.dry_run);
+        assert!(up.allow_breaking);
+        assert_ne!(up.request_id, [0u8; 16]); // a fresh id was minted
+
+        let val = SchemaValidateBody {
+            schema_document: "entity Q {}".into(),
+        }
+        .to_request();
+        assert_eq!(val.schema_document, "entity Q {}");
+    }
+
+    #[test]
+    fn replace_body_requires_force_drop_existing() {
+        assert!(
+            SchemaReplaceBody {
+                schema_document: "entity P {}".into(),
+                force_drop_existing: false,
+            }
+            .to_request()
+            .is_err()
+        );
+        let req = SchemaReplaceBody {
+            schema_document: "entity P {}".into(),
+            force_drop_existing: true,
+        }
+        .to_request()
+        .unwrap();
+        assert!(req.force_drop_existing);
+        assert_eq!(req.schema_document, "entity P {}");
+    }
+
+    #[test]
+    fn error_dto_maps_position_and_severity() {
+        let dto = SchemaErrorDto::from(&sample_error());
+        assert_eq!(dto.code, "E001");
+        assert_eq!(dto.message, "undeclared type");
+        assert_eq!((dto.line, dto.column, dto.length), (3, 5, 7));
+        assert_eq!(dto.severity, 2);
+    }
+
+    #[test]
+    fn get_response_maps_and_drops_source_blob() {
+        let dto = SchemaDto::from(SchemaGetResponse {
+            namespace: "people".into(),
+            schema_version: 2,
+            schema_document: "entity Person {}".into(),
+            source_blob: vec![1, 2, 3], // AST blob is not surfaced
+            uploaded_at_unix_nanos: 99,
+            validator_version: 1,
+        });
+        assert_eq!(dto.namespace, "people");
+        assert_eq!(dto.schema_version, 2);
+        assert_eq!(dto.schema_document, "entity Person {}");
+        assert_eq!(dto.uploaded_at_unix_nanos, 99);
+        assert_eq!(dto.validator_version, 1);
+    }
+
+    #[test]
+    fn upload_response_maps_errors_and_compat() {
+        let dto = SchemaUploadDto::from(SchemaUploadResponse {
+            namespace: "people".into(),
+            schema_version: 0, // rejected
+            validation_errors: vec![sample_error()],
+            backward_compatible: false,
+            migration_summary_blob: vec![],
+        });
+        assert_eq!(dto.namespace, "people");
+        assert_eq!(dto.schema_version, 0);
+        assert!(!dto.backward_compatible);
+        assert_eq!(dto.validation_errors.len(), 1);
+        assert_eq!(dto.validation_errors[0].code, "E001");
+    }
+
+    #[test]
+    fn validate_response_maps_would_be_version_and_errors() {
+        let dto = SchemaValidateDto::from(SchemaValidateResponse {
+            namespace: "people".into(),
+            would_be_version: 3,
+            validation_errors: vec![],
+        });
+        assert_eq!(dto.namespace, "people");
+        assert_eq!(dto.would_be_version, 3);
+        assert!(dto.validation_errors.is_empty());
+    }
+
+    #[test]
+    fn replace_response_surfaces_dropped_count() {
+        let dto = SchemaReplaceDto::from(SchemaReplaceResponse {
+            namespace: "people".into(),
+            schema_version: 5,
+            dropped_count: 12,
+            validation_errors: vec![sample_error()],
+        });
+        assert_eq!(dto.namespace, "people");
+        assert_eq!(dto.schema_version, 5);
+        assert_eq!(dto.dropped_count, 12);
+        assert_eq!(dto.validation_errors.len(), 1);
     }
 }

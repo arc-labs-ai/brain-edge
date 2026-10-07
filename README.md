@@ -142,8 +142,7 @@ the customer's own HELLO/AUTH included, so Brain authenticates the connection as
 that same credential and isolation stays entirely in Brain. What the edge adds on
 the path is metering and rate limiting, driven off the 32-byte frame header. A
 native `brain-db-sdk` client therefore gets the full wire protocol through the
-same process, and the same limits, as the HTTP callers. See
-[`examples/wire_proxy_smoke.rs`](./examples/wire_proxy_smoke.rs).
+same process, and the same limits, as the HTTP callers.
 
 Malformed numeric values (e.g. `BRAIN_EDGE_POOL_SIZE=abc`) or a zero where a
 positive is required fail startup loudly rather than silently falling back to
@@ -200,17 +199,16 @@ docker compose up
 curl -s localhost:8080/v1/whoami -H "Authorization: Bearer $BRAIN_KEY"
 ```
 
-**Build context is the parent, on purpose.** `brain-edge` depends on a sibling
-crate via a path dependency — `brain-db-sdk = { path = "../brain-sdk/rust" }`.
-A Docker context scoped to `brain-edge/` alone can't see `../brain-sdk`, so the
-Dockerfile is built with the **arc-labs parent** as the context
-(`context: ..` in compose). It `COPY`s both `brain-edge/` and `brain-sdk/`,
-preserving their relative layout so the path dep resolves. To build by hand:
+**Build it from this directory.** `brain-db-sdk` resolves from crates.io, so the
+context is just this crate:
 
 ```bash
-cd ..                       # the arc-labs parent
-docker build -f brain-edge/Dockerfile -t brain-edge:latest .
+docker build -t brain-edge:latest .
 ```
+
+This used to require the arc-labs parent as the context, because `brain-db-sdk`
+was a path dependency on a sibling checkout that a context scoped here could not
+see. That is no longer the case.
 
 **Env vars:** the full set is in [Configuration (env)](#configuration-env)
 above (the single source, defined in [`src/config/mod.rs`](./src/config/mod.rs)).

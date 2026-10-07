@@ -75,3 +75,76 @@ impl From<GetCapabilitiesResponse> for CapabilitiesDto {
         }
     }
 }
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use brain_db_sdk::wire::types::{AuthMethod, Capabilities, ServerFeatures, SpacePermissions};
+
+    fn sample_connection(space_id: [u8; 16]) -> ConnectionInfo {
+        ConnectionInfo {
+            space_id,
+            server_id: "mock-brain".into(),
+            chosen_version: 1,
+            connection_id: [0xAB; 16],
+            bound_shard_id: 0,
+            permissions: SpacePermissions {
+                can_encode: true,
+                can_recall: true,
+                can_plan: false,
+                can_reason: false,
+                can_forget: true,
+                can_admin: false,
+                can_act_as: false,
+            },
+            namespace: "acme".into(),
+            server_features: ServerFeatures {
+                max_payload_size: 1 << 20,
+                max_concurrent_streams: 64,
+                idle_timeout_seconds: 300,
+                auth_methods: vec![AuthMethod::Token],
+            },
+        }
+    }
+
+    #[test]
+    fn whoami_renders_space_id_as_uuid_and_maps_permissions() {
+        let mut space_id = [0u8; 16];
+        space_id[0] = 0x11;
+        space_id[15] = 0x2a;
+        let dto = WhoamiDto::from(&sample_connection(space_id));
+
+        assert_eq!(dto.namespace, "acme");
+        // The connection's 16-byte `space_id` is surfaced as a UUID string under
+        // the `space_id` JSON field (the historical agent_id -> space_id rename).
+        assert_eq!(dto.space_id, uuid_string(&space_id));
+        assert_eq!(dto.space_id, "11000000-0000-0000-0000-00000000002a");
+
+        assert!(dto.permissions.can_encode);
+        assert!(dto.permissions.can_recall);
+        assert!(!dto.permissions.can_plan);
+        assert!(!dto.permissions.can_reason);
+        assert!(dto.permissions.can_forget);
+        assert!(!dto.permissions.can_admin);
+    }
+
+    #[test]
+    fn capabilities_dto_maps_every_flag() {
+        let dto = CapabilitiesDto::from(GetCapabilitiesResponse {
+            capabilities: Capabilities {
+                rerank: true,
+                llm_extractor: false,
+                classifier_extractor: true,
+                pattern_extractor: true,
+                schema_namespaces: vec!["brain".into(), "people".into()],
+                vector_dim: 384,
+            },
+        });
+        assert!(dto.rerank);
+        assert!(!dto.llm_extractor);
+        assert!(dto.classifier_extractor);
+        assert!(dto.pattern_extractor);
+        assert_eq!(dto.schema_namespaces, vec!["brain", "people"]);
+        assert_eq!(dto.vector_dim, 384);
+    }
+}

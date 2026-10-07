@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
-repository = "https://github.com/arc-labs/brain-edge"
+repository = "https://github.com/arc-labs-ai/brain-edge"
 readme = "README.md"
 keywords = ["brain", "memory", "database", "http", "edge"]
 categories = ["database", "web-programming::http-server"]
@@ -48,7 +48,11 @@ arc-swap = "1"
 
 # The wire client to Brain. brain-edge is axum on top of the Brain SDK — it does
 # not re-implement the wire protocol, it reuses the SDK that already speaks it.
-brain-db-sdk = { path = "../brain-sdk/rust" }
+# Resolved from crates.io. This was a `path` dep on a sibling checkout until
+# brain-db-sdk 0.1.0 was published; the path made every build — local, CI and
+# Docker — depend on brain-sdk sitting next to this repo on disk, and meant we
+# compiled against working-tree source rather than the artifact consumers get.
+brain-db-sdk = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # Lints.
@@ -89,6 +93,11 @@ doc_markdown = "allow"
 too_long_first_doc_paragraph = "allow"
 
 # -- allowed: wrong for this code, on inspection ---------------------------
+# 1. Macro false positive. `#[async_trait]` expands a trait method into one
+# returning `Pin<Box<dyn Future>>`, which is already `#[must_use]`, and emits a
+# `#[must_use]` of its own on top. The attribute is generated, not written here,
+# so there is nothing in this crate to remove.
+double_must_use = "allow"
 # 20. Nursery. Suggests `const fn` for bodies that are const by accident today;
 # committing freezes implementation details into the API.
 missing_const_for_fn = "allow"

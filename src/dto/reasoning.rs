@@ -259,3 +259,157 @@ fn inference_kind_str(k: &InferenceKind) -> String {
         InferenceKind::Other(s) => s.clone(),
     }
 }
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+
+    fn text_endpoint(t: &str) -> EndpointSpec {
+        EndpointSpec {
+            text: Some(t.into()),
+            memory_id: None,
+        }
+    }
+
+    #[test]
+    fn plan_body_resolves_endpoints_parses_strategy_and_keeps_budget() {
+        let body = PlanBody {
+            start: text_endpoint("at home"),
+            goal: EndpointSpec {
+                text: None,
+                memory_id: Some("42".into()),
+            },
+            max_steps: 12,
+            max_wall_time_ms: 2_000,
+            max_branches: 16,
+            strategy: Some(" A* ".into()),
+        };
+        let req = body.to_request().unwrap();
+        assert!(matches!(req.start, PlanState::ByText(ref t) if t == "at home"));
+        assert!(matches!(req.goal, PlanState::ByMemoryId(42)));
+        assert!(matches!(req.strategy_hint, Some(PlanStrategy::AStar)));
+        assert_eq!(req.budget.max_steps, 12);
+        assert_eq!(req.budget.max_wall_time_ms, 2_000);
+        assert_eq!(req.budget.max_branches_explored, 16);
+        assert!(req.request_id.is_some());
+    }
+
+    #[test]
+    fn plan_body_rejects_empty_endpoint_and_unknown_strategy() {
+        // An endpoint with neither text nor memory_id is an error.
+        let missing = PlanBody {
+            start: EndpointSpec {
+                text: None,
+                memory_id: None,
+            },
+            goal: text_endpoint("b"),
+            max_steps: 8,
+            max_wall_time_ms: 5_000,
+            max_branches: 32,
+            strategy: None,
+        };
+        assert!(missing.to_request().is_err());
+
+        // A blank text does not count as a supplied endpoint.
+        let blank = PlanBody {
+            start: text_endpoint("   "),
+            goal: text_endpoint("b"),
+            max_steps: 8,
+            max_wall_time_ms: 5_000,
+            max_branches: 32,
+            strategy: None,
+        };
+        assert!(blank.to_request().is_err());
+
+        let bad_strategy = PlanBody {
+            start: text_endpoint("a"),
+            goal: text_endpoint("b"),
+            max_steps: 8,
+            max_wall_time_ms: 5_000,
+            max_branches: 32,
+            strategy: Some("teleport".into()),
+        };
+        assert!(bad_strategy.to_request().is_err());
+    }
+
+    #[test]
+    fn plan_response_maps_steps_and_transition_kinds() {
+        let steps = vec![
+            PlanStep {
+                step_index: 0,
+                memory_id: 7,
+                text: "start".into(),
+                transition_kind: TransitionKind::Initial,
+                confidence: 1.0,
+                estimated_distance_to_goal: 3.0,
+            },
+            PlanStep {
+                step_index: 1,
+                memory_id: 8,
+                text: "next".into(),
+                transition_kind: TransitionKind::Other("teleport".into()),
+                confidence: 0.7,
+                estimated_distance_to_goal: 1.0,
+            },
+        ];
+        let dto = PlanResponseDto::from(steps);
+        assert_eq!(dto.steps.len(), 2);
+        assert_eq!(dto.steps[0].memory_id, "7");
+        assert_eq!(dto.steps[0].transition_kind, "initial");
+        assert_eq!(dto.steps[1].transition_kind, "teleport"); // Other passthrough
+    }
+
+    #[test]
+    fn reason_body_resolves_observation_and_carries_budget() {
+        let body = ReasonBody {
+            observation: EndpointSpec {
+                text: None,
+                memory_id: Some("9".into()),
+            },
+            depth: 4,
+            confidence_threshold: 0.6,
+            max_inferences: 7,
+            budget_wall_time_ms: 3_000,
+        };
+        let req = body.to_request().unwrap();
+        assert!(matches!(req.observation, ObservationInput::ByMemoryId(9)));
+        assert_eq!(req.depth, 4);
+        assert_eq!(req.confidence_threshold.to_bits(), 0.6f32.to_bits());
+        assert_eq!(req.max_inferences, 7);
+        assert_eq!(req.budget_wall_time_ms, 3_000);
+        assert!(req.request_id.is_some());
+
+        assert!(
+            ReasonBody {
+                observation: EndpointSpec {
+                    text: None,
+                    memory_id: None,
+                },
+                depth: 3,
+                confidence_threshold: 0.5,
+                max_inferences: 10,
+                budget_wall_time_ms: 5_000,
+            }
+            .to_request()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reason_response_maps_inferences_and_kinds() {
+        let steps = vec![InferenceStep {
+            step_index: 0,
+            claim: "it rained".into(),
+            supporting_memories: vec![1, 2],
+            contradicting_memories: vec![3],
+            confidence: 0.8,
+            inference_kind: InferenceKind::CausalExplanation,
+        }];
+        let dto = ReasonResponseDto::from(steps);
+        assert_eq!(dto.inferences.len(), 1);
+        assert_eq!(dto.inferences[0].claim, "it rained");
+        assert_eq!(dto.inferences[0].supporting_memories, vec!["1", "2"]);
+        assert_eq!(dto.inferences[0].contradicting_memories, vec!["3"]);
+        assert_eq!(dto.inferences[0].inference_kind, "causal_explanation");
+    }
+}

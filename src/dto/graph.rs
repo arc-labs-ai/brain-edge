@@ -372,7 +372,7 @@ mod graph_tests {
         assert!(!r.include_statements);
         assert!(r.include_memories);
         assert!(!r.include_memory_edges);
-        assert!(r.cursor.is_empty());
+        assert_eq!(r.cursor, [] as [u8; 0]);
     }
 
     #[test]

@@ -9,8 +9,6 @@
 #
 # Bring it up from THIS directory:
 #     docker compose up
-# (Compose resolves `context: ..` to the arc-labs parent so brain-edge's
-#  ../brain-sdk/rust path dependency is inside the build context.)
 
 services:
   # ---------------------------------------------------------------------------
@@ -18,10 +16,10 @@ services:
   # ---------------------------------------------------------------------------
   brain-edge:
     build:
-      # Context is the arc-labs PARENT so both brain-edge/ and its sibling
-      # brain-sdk/ (the `../brain-sdk/rust` path dep) are COPY-able.
-      context: ..
-      dockerfile: brain-edge/Dockerfile
+      # This crate is the whole context: brain-db-sdk resolves from crates.io,
+      # so there is no sibling checkout to reach outside it for.
+      context: .
+      dockerfile: Dockerfile
     image: brain-edge:latest
     ports:
       # host:container — the HTTP/JSON API.
@@ -30,7 +28,10 @@ services:
       # Env var names + defaults come straight from src/config/mod.rs.
       BRAIN_EDGE_POOL_SIZE: "4"             # pool width per credential
       RUST_LOG: "brain_edge=info"           # log filter
-      BRAIN_ADDR: "brain:7878"       # Brain wire addr (service DNS name)
+      # Service DNS name + the port Brain listens on INSIDE the network (8080),
+      # not the 7878 it is published on. brain-edge defaults to 127.0.0.1:7878,
+      # which predates Brain settling on 8080 for its data plane.
+      BRAIN_ADDR: "brain:8080"       # Brain wire addr (service DNS name)
       BRAIN_EDGE_LISTEN: "0.0.0.0:8080"     # HTTP listen addr
     depends_on:
       - brain
@@ -45,29 +46,33 @@ services:
   # then re-run `docker compose up`. The `image:` below is a placeholder tag.
   # ---------------------------------------------------------------------------
   brain:
-    image: brain:latest
+    # The published multi-arch image. This was an `image: brain:latest`
+    # placeholder you had to build yourself; brain-db is on GHCR now. Pin a
+    # digest instead of a tag if you want the deploy to be immutable.
+    image: ghcr.io/arc-labs-ai/brain-db:0.1.0
     # io_uring needs an unrestricted seccomp profile or the shard runtime traps.
     security_opt:
       - "seccomp:unconfined"
+    # glommio registers io_uring buffers against the memlock rlimit; the Docker
+    # default is too small and the shard runtime fails to start without this.
+    ulimits:
+      memlock: -1
     ports:
-      # Expose the wire port the edge connects to (also handy for the native
-      # brain-db-sdk client / brain-shell). host:container.
-      - "7878:7878"
+      # The wire port the edge connects to. 8080 inside the container, published
+      # on 7878 so it does not collide with brain-edge's own 8080 on the host.
+      # host:container.
+      - "7878:8080"
     environment:
-      # The embedding model dir INSIDE the container (bind-mounted below).
-      BRAIN_EMBED_MODEL_DIR: "/models/bge-small"
-      # NOTE: rerank / classifier (GLiNER) / llm tiers HARD-FAIL at boot if
-      # they can't load. Either provide their models + a valid LLM api key
-      # (e.g. BRAIN__LLM__API_KEY=...) here, or disable the optional ones in
-      # your brain config. An empty [llm] api_key is a fatal startup
-      # error regardless of extractor flags — set it before first boot.
-      # BRAIN__LLM__API_KEY: "sk-..."
+      # The ONLY thing Brain needs to boot. Extraction and write-time HyPE are
+      # mandatory and always-on, so an absent or invalid key is a fatal startup
+      # error — Brain verifies the credential against the provider at boot
+      # rather than failing silently on the first write.
+      BRAIN__LLM__API_KEY: "${BRAIN__LLM__API_KEY:?set BRAIN__LLM__API_KEY in .env}"
     volumes:
-      # Bind-mount the embedding model from the host into the model dir above.
-      # Point the left side at your local BGE-small checkout.
-      - "./models/bge-small:/models/bge-small:ro"
       # Persistent data dir (WAL, arena, redb, indexes) on a named volume.
-      - "brain-data:/data"
+      # The embedding and GLiNER models ship inside the image, so neither needs
+      # a mount — this used to bind-mount a BGE-small checkout from the host.
+      - "brain-data:/var/lib/brain/data"
     restart: unless-stopped
 
 volumes:

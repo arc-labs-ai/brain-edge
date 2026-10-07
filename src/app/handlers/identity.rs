@@ -28,7 +28,9 @@ pub async fn capabilities(
 ) -> Result<Json<CapabilitiesDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
-    let out = client.capabilities(&GetCapabilitiesRequest {}).await;
+    let out = client
+        .capabilities(&GetCapabilitiesRequest::default())
+        .await;
     state.record("capabilities", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(CapabilitiesDto::from(resp)))
