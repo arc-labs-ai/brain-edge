@@ -55,7 +55,7 @@ env:
 jobs:
   crates-io:
     name: Publish → crates.io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -90,12 +90,17 @@ jobs:
 
   image:
     name: Publish image → ghcr.io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
       packages: write # push to ghcr.io
-      id-token: write # build provenance attestation
+      id-token: write # OIDC identity for the provenance attestation
+      # Writing the attestation itself needs its own scope. Without it the
+      # publish succeeds and the attest step fails with "Failed to persist
+      # attestation: Resource not accessible by integration", which fails the
+      # whole job AFTER the image is already live — v0.1.0 published that way.
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
