@@ -55,7 +55,7 @@ env:
 jobs:
   crates-io:
     name: Publish → crates.io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
@@ -90,7 +90,7 @@ jobs:
 
   image:
     name: Publish image → ghcr.io
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: release
     permissions:
       contents: read
