@@ -1,10 +1,22 @@
 name: CI
 
+# feature -> dev -> main, with the dev -> main PR as the release gate.
+# `pull_request` covers both hops; `push` is main-only and deliberately excludes
+# dev. In brain-db, dev being both a push trigger and the head of the standing
+# dev -> main PR made every merge into dev raise two runs of this workflow on
+# one commit — 71 minutes of wall-clock burned across three collisions before it
+# was caught.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+
+# Cancel a superseded PR run; never cancel a push to main, where a half-run
+# release check is worse than a slightly stale one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
