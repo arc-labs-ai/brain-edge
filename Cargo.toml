@@ -1,6 +1,6 @@
 [package]
 name = "brain-edge"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
