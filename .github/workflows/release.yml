@@ -109,19 +109,30 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-  image:
-    name: Publish image → ghcr.io
-    runs-on: ubuntu-26.04
+  # Each platform builds on its own NATIVE runner rather than cross-building
+  # arm64 under QEMU on one machine. v0.1.0 spent 21 minutes in a single
+  # emulated build; brain-db splits the same way and documents why — a Rust
+  # workspace with native deps compiled under QEMU goes from minutes to hours.
+  # ubuntu-26.04-arm is free for public repos.
+  #
+  # Each job pushes BY DIGEST only; `merge` assembles the two digests into one
+  # manifest list, applies the real tags, and attests the result.
+  image-build:
+    name: Build image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     environment: release
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-26.04
+          - platform: linux/arm64
+            runner: ubuntu-26.04-arm
     permissions:
       contents: read
       packages: write # push to ghcr.io
-      id-token: write # OIDC identity for the provenance attestation
-      # Writing the attestation itself needs its own scope. Without it the
-      # publish succeeds and the attest step fails with "Failed to persist
-      # attestation: Resource not accessible by integration", which fails the
-      # whole job AFTER the image is already live — v0.1.0 published that way.
-      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -134,6 +145,11 @@ jobs:
           echo "tag=$TAG crate=$CRATE"
           test "$TAG" = "$CRATE" || { echo "::error::tag $TAG != crate version $CRATE"; exit 1; }
 
+      - name: Derive platform tag pair
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to ghcr.io
@@ -142,6 +158,90 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Labels are a per-image-config property, so they are applied here rather
+      # than only on the manifest list. brain-db shipped a release with empty
+      # version/revision/source because they were set only in the merge job.
+      - name: Derive image labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/arc-labs-ai/brain-edge
+          tags: type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+          labels: |
+            org.opencontainers.image.title=brain-edge
+            org.opencontainers.image.description=The HTTP/JSON edge for the Brain memory database
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/arc-labs-ai/brain-edge,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      # The native runner means the just-pushed digest can be started here. CI
+      # already smoke-tests the image it builds; this does the same for the one
+      # that actually ships. /health/live is the static liveness route, so it
+      # needs no Brain behind it.
+      - name: Smoke-test the pushed image
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/arc-labs-ai/brain-edge@${{ steps.build.outputs.digest }}"
+          docker run -d --name smoke -p 8080:8080 "$IMG"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health/live >/dev/null 2>&1; then
+              echo "edge is live"; docker rm -f smoke; exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Status}}' smoke)" != "running" ]; then
+              echo "::error title=Smoke test failed::container exited"
+              docker logs smoke; docker rm -f smoke; exit 1
+            fi
+            sleep 2
+          done
+          echo "::error title=Smoke test failed::/health/live never answered"
+          docker logs smoke; docker rm -f smoke; exit 1
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  image:
+    name: Publish image → ghcr.io
+    needs: image-build
+    runs-on: ubuntu-26.04
+    environment: release
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+      id-token: write # OIDC identity for the provenance attestation
+      # Writing the attestation itself needs its own scope. Without it the
+      # publish succeeds and the attest step fails with "Failed to persist
+      # attestation: Resource not accessible by integration", which fails the
+      # whole job AFTER the image is already live — v0.1.0 published that way.
+      attestations: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
 
       # From tag v1.2.3 this produces :1.2.3, :1.2, :1 and :latest. The
       # floating tags let a self-hoster track patches without editing compose
@@ -164,24 +264,38 @@ jobs:
             type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }}
             type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }},enable=${{ !startsWith(env.RELEASE_TAG, 'v0.') }}
-          labels: |
-            org.opencontainers.image.title=brain-edge
-            org.opencontainers.image.description=The HTTP/JSON edge for the Brain memory database
-            org.opencontainers.image.licenses=Apache-2.0
 
-      # Context is the PARENT of both crates, not brain-edge — see the header
-      # comment in the Dockerfile. Same shape the CI build job uses.
-      - name: Build and push
-        id: push
-        uses: docker/build-push-action@v7
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
         with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The image name is substituted at the workflow-expression level, leaving
+      # exactly one `%s` for printf to cycle across each digest filename that
+      # `*` glob-expands. Passing it as a second printf argument instead would
+      # add a second %s and misalign every pair after the first digest.
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/arc-labs-ai/brain-edge@sha256:%s ' *)
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.meta.outputs.json }}
+
+      # Attestation must name the MANIFEST LIST digest, not a per-platform one:
+      # that is what a consumer pulls and what `${IMAGE}@${DIGEST}` pins.
+      - name: Resolve the manifest-list digest
+        id: inspect
+        run: |
+          digest="$(docker buildx imagetools inspect \
+            "ghcr.io/arc-labs-ai/brain-edge:${{ steps.meta.outputs.version }}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       # Signed provenance linking the image digest back to this workflow run,
       # so a consumer can verify where the image came from.
@@ -189,5 +303,5 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/arc-labs-ai/brain-edge
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.inspect.outputs.digest }}
           push-to-registry: true
