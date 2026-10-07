@@ -25,11 +25,11 @@ name: Release
 # Until that is configured the crates.io job fails closed (it never falls back
 # to a token). GHCR needs no setup beyond the package being owned by the org.
 #
-# ORDERING: brain-edge depends on `brain-db-sdk`. That crate must already be on
-# crates.io at a matching version or `cargo publish` fails here — crates.io
-# refuses a crate whose dependencies it cannot resolve. Release brain-sdk
-# first. The image job has no such constraint: it builds from the sibling
-# checkout and can ship independently.
+# ORDERING: brain-edge depends on `brain-db-sdk`, which must already be on
+# crates.io at a matching version or `cargo publish` fails — crates.io refuses a
+# crate whose dependencies it cannot resolve. brain-db-sdk 0.1.0 is published,
+# and Cargo.toml now depends on it by version rather than by path, so both jobs
+# resolve it from the registry like any other dependency.
 #
 # The two jobs are independent — crates.io failing does not block the image,
 # and vice versa. Both registries reject re-publishing the same version, so
@@ -61,20 +61,7 @@ jobs:
       contents: read
       id-token: write # OIDC → crates.io trusted publishing
     steps:
-      # Cargo.toml carries `brain-db-sdk = { version = "0.1", path =
-      # "../brain-sdk/rust" }`. The sibling checkout satisfies the path for the
-      # pre-publish verify build; cargo rewrites the dep to the bare version
-      # for consumers when it packages.
-      - name: Checkout brain-edge
-        uses: actions/checkout@v4
-        with:
-          path: brain-edge
-      - name: Checkout brain-sdk (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: arc-labs-ai/brain-sdk
-          ref: main
-          path: brain-sdk
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -82,7 +69,6 @@ jobs:
           workspaces: brain-edge
 
       - name: Verify tag matches crate version
-        working-directory: brain-edge
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           CRATE="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
@@ -90,7 +76,6 @@ jobs:
           test "$TAG" = "$CRATE" || { echo "::error::tag $TAG != crate version $CRATE"; exit 1; }
 
       - name: Test
-        working-directory: brain-edge
         run: cargo test --all-targets
 
       # Exchanges the GitHub OIDC token for a short-lived crates.io token.
@@ -99,7 +84,6 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Publish
-        working-directory: brain-edge
         run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
@@ -113,29 +97,19 @@ jobs:
       packages: write # push to ghcr.io
       id-token: write # build provenance attestation
     steps:
-      - name: Checkout brain-edge
-        uses: actions/checkout@v4
-        with:
-          path: brain-edge
-      - name: Checkout brain-sdk (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: arc-labs-ai/brain-sdk
-          ref: main
-          path: brain-sdk
+      - uses: actions/checkout@v7
 
       - name: Verify tag matches crate version
-        working-directory: brain-edge
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           CRATE="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           echo "tag=$TAG crate=$CRATE"
           test "$TAG" = "$CRATE" || { echo "::error::tag $TAG != crate version $CRATE"; exit 1; }
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -146,7 +120,7 @@ jobs:
       # files; :1.2.3 is the one to pin in production.
       - name: Derive image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/arc-labs-ai/brain-edge
           tags: |
@@ -162,10 +136,9 @@ jobs:
       # comment in the Dockerfile. Same shape the CI build job uses.
       - name: Build and push
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
-          file: brain-edge/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
@@ -176,7 +149,7 @@ jobs:
       # Signed provenance linking the image digest back to this workflow run,
       # so a consumer can verify where the image came from.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/arc-labs-ai/brain-edge
           subject-digest: ${{ steps.push.outputs.digest }}
