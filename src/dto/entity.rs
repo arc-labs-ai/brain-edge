@@ -223,11 +223,20 @@ pub fn get_request_from_id(id: &str) -> Result<EntityGetRequest, String> {
     })
 }
 
-/// `GET /v1/entities` query parameters. All optional; omitted fields fall back
-/// to "no filter" (and a default page size).
+/// `GET /v1/entities` query parameters.
+///
+/// `type_id` is REQUIRED in practice: Brain rejects ENTITY_LIST without a type
+/// filter in v1.0 with `entity_type_id filter is required in v1.0 ENTITY_LIST`
+/// (HTTP 400). It is `#[serde(default)]` here so the 400 comes from Brain with
+/// its own wording rather than from a deserialisation failure, but a caller
+/// that omits it gets an error, not an unfiltered list.
+///
+/// The rest are genuinely optional and fall back to "no filter" (and a default
+/// page size).
 #[derive(Debug, Default, Deserialize)]
 pub struct ListEntitiesQuery {
-    /// `0`/omitted = no type filter.
+    /// Entity type to list. Required — see the note on the struct; `0`/omitted
+    /// is rejected by Brain rather than meaning "no type filter".
     #[serde(default)]
     pub type_id: u32,
     /// Empty/omitted = no name-prefix filter.
