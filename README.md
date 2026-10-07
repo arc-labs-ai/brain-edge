@@ -142,8 +142,7 @@ the customer's own HELLO/AUTH included, so Brain authenticates the connection as
 that same credential and isolation stays entirely in Brain. What the edge adds on
 the path is metering and rate limiting, driven off the 32-byte frame header. A
 native `brain-db-sdk` client therefore gets the full wire protocol through the
-same process, and the same limits, as the HTTP callers. See
-[`examples/wire_proxy_smoke.rs`](./examples/wire_proxy_smoke.rs).
+same process, and the same limits, as the HTTP callers.
 
 Malformed numeric values (e.g. `BRAIN_EDGE_POOL_SIZE=abc`) or a zero where a
 positive is required fail startup loudly rather than silently falling back to
