@@ -3,6 +3,8 @@
 pub mod entity;
 pub mod graph;
 pub mod identity;
+pub mod llm_credential;
+pub mod llm_proxy;
 pub mod memory;
 pub mod reasoning;
 pub mod relation;

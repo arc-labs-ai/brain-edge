@@ -52,7 +52,11 @@ arc-swap = "1"
 # brain-db-sdk 0.1.0 was published; the path made every build — local, CI and
 # Docker — depend on brain-sdk sitting next to this repo on disk, and meant we
 # compiled against working-tree source rather than the artifact consumers get.
-brain-db-sdk = "0.1.0"
+#
+# 0.2.0 is a breaking release: `whoami` reports named permission booleans in
+# place of the raw bitset, and the LLM credential error codes the BYOK handlers
+# map arrived with it.
+brain-db-sdk = "0.2.0"
 
 # ---------------------------------------------------------------------------
 # Lints.
@@ -66,6 +70,23 @@ brain-db-sdk = "0.1.0"
 # (221 warnings). The count in each comment is what that lint produced, so the
 # next person can see it was considered rather than overlooked.
 # ---------------------------------------------------------------------------
+
+# BYOK secret sealing. `ring` is ALREADY in this binary's tree via rustls, so
+# depending on it directly adds no new cryptographic implementation to audit;
+# pulling a second AEAD crate would widen the trusted surface to save nothing.
+ring = "0.17"
+# Constant-time comparison for the broker's shared token. NOT `ring`'s
+# `verify_slices_are_equal`: that is deprecated and documents "no promises
+# regarding side channels", which is the one promise this needs.
+subtle = "2"
+
+# Upstream HTTP for the BYOK broker. Already in the lock graph via
+# brain-db-sdk, so this adds no new download or TLS stack.
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+
+# Wipes decrypted provider keys on drop so plaintext does not linger in freed
+# memory after a request completes.
+zeroize = "1"
 
 [lints.rust]
 # This crate terminates untrusted connections. It has no `unsafe` and must not
@@ -132,7 +153,23 @@ option_if_let_else = "allow"
 # suboptimal_flops, cargo_common_metadata.
 
 [dev-dependencies]
+# Scratch dirs for the file-backed credential-store tests.
+tempfile = "3"
 # `ServiceExt::oneshot` drives the router in-process, so the port tests
 # exercise the real routing + extractor stack without binding a socket.
 # Already in the lock graph via axum/tower-http, so this adds no download.
 tower = { version = "0.5", features = ["util"] }
+
+
+# No `[patch.crates-io]`. The edge builds against the published brain-db-sdk,
+# which is what consumers get and what CI and Docker can both resolve without
+# brain-sdk sitting next to this repo on disk.
+#
+# If you ever need to build against an unreleased SDK, patch it — do not change
+# the dependency to a `path`. A path dependency pulls a SECOND copy of the crate
+# into the graph alongside the published one other dependencies resolve, and
+# Cargo treats those as different types (the same mistake cost the playground
+# service 38 "expected X, found a different X" errors). A patch redirects every
+# resolution at once, so exactly one copy exists — and its version has to
+# satisfy the requirement above, or Cargo silently ignores it and resolves the
+# registry copy with only a warning.

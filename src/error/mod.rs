@@ -11,7 +11,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use brain_db_sdk::BrainError;
-use brain_db_sdk::wire::types::ErrorCategoryWire;
+use brain_db_sdk::wire::types::{ErrorCategoryWire, ErrorCodeWire};
 use serde::Serialize;
 
 /// A structured API error. Serializes to `{ "error": { code, message } }` with
@@ -51,6 +51,69 @@ impl ApiError {
         }
     }
 
+    /// A `501` for a capability this edge was not configured with.
+    ///
+    /// Used when BYOK is requested but no key-encryption key is set: the edge
+    /// declines rather than falling back to storing a provider key in the
+    /// clear. `501` rather than `503` because it will not start working on
+    /// retry — it needs configuration.
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            code: "not_implemented",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
+    /// A `409` for a request that conflicts with the tenant's current state.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "conflict",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
+    /// A `502` when an upstream the edge depends on could not be reached.
+    ///
+    /// The detail is deliberately thin: an upstream error can embed the request
+    /// URL and headers, and for the LLM broker those headers carry a tenant's
+    /// provider key.
+    pub fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            code: "upstream.error",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
+    /// A `409 llm_credential.missing` — this namespace has no provider key.
+    ///
+    /// Shares the code the data plane returns for the same condition (see
+    /// `from_brain`), so one code means one thing whichever surface produced
+    /// it, and a client's handling works against both.
+    pub fn llm_credential_missing(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "llm_credential.missing",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
+    /// A `404` for a resource this tenant has not created.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
     /// A `400` for a malformed request the edge itself rejects.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
@@ -73,6 +136,38 @@ impl ApiError {
                 // the caller's request.
                 message: "the memory engine is unavailable; retry shortly".to_string(),
                 internal: Some(format!("brain unavailable: {err}")),
+            },
+            // BYOK credential verdicts are matched on the CODE before the
+            // category fan-out below, because the category alone cannot carry
+            // them: `Conflict` is also an ordinary idempotency conflict, and
+            // telling an operator to register a provider key they already hold
+            // is worse than a generic error.
+            BrainError::Server {
+                code: ErrorCodeWire::LlmCredentialMissing,
+                message,
+                ..
+            } => Self {
+                // 409, deliberately NOT 503. The SDK retry lists are
+                // `(0, 503)` — a 503 here would make every client retry
+                // forever against a tenant that simply has not registered a
+                // key. This condition cannot self-heal, so it must be a 4xx.
+                status: StatusCode::CONFLICT,
+                code: "llm_credential.missing",
+                message: message.clone(),
+                internal: None,
+            },
+            BrainError::Server {
+                code: ErrorCodeWire::LlmCredentialUnavailable,
+                message,
+                ..
+            } => Self {
+                // 503 so clients DO retry: the key exists, the broker was
+                // briefly unreachable. Collapsing this into the 409 above
+                // would permanently fail writes for a healthy tenant.
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "llm_credential.unavailable",
+                message: message.clone(),
+                internal: None,
             },
             BrainError::Server {
                 category, message, ..
@@ -188,6 +283,63 @@ mod tests {
             details: None,
             retry_after_ms: None,
         })
+    }
+
+    fn server_with_code(
+        code: ErrorCodeWire,
+        category: ErrorCategoryWire,
+        message: &str,
+    ) -> BrainError {
+        BrainError::from_server(ErrorResponse {
+            code,
+            category,
+            message: message.to_string(),
+            details: None,
+            retry_after_ms: None,
+        })
+    }
+
+    #[test]
+    fn a_missing_llm_credential_is_a_409_not_a_503() {
+        // The status choice is the contract. Every SDK's retry list is
+        // `(0, 503)`, so mapping this to 503 would make clients retry forever
+        // against a tenant that has simply not registered a provider key.
+        let err = ApiError::from_brain(&server_with_code(
+            ErrorCodeWire::LlmCredentialMissing,
+            ErrorCategoryWire::Conflict,
+            "no provider key registered for acme",
+        ));
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+        assert_eq!(err.code, "llm_credential.missing");
+        assert_eq!(err.message(), "no provider key registered for acme");
+        assert!(
+            err.internal.is_none(),
+            "this is about the caller's workspace, not the edge's own trouble"
+        );
+    }
+
+    #[test]
+    fn a_transient_credential_failure_is_a_503_so_clients_retry() {
+        let err = ApiError::from_brain(&server_with_code(
+            ErrorCodeWire::LlmCredentialUnavailable,
+            ErrorCategoryWire::Unavailable,
+            "credential broker unreachable",
+        ));
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.code, "llm_credential.unavailable");
+    }
+
+    #[test]
+    fn an_ordinary_conflict_is_not_reported_as_a_missing_credential() {
+        // `Conflict` also covers idempotency conflicts. Matching on category
+        // alone would tell operators to configure a key they already have.
+        let err = ApiError::from_brain(&server_with_code(
+            ErrorCodeWire::IdempotencyConflict,
+            ErrorCategoryWire::Conflict,
+            "same request id, different body",
+        ));
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+        assert_eq!(err.code, "conflict");
     }
 
     #[test]
