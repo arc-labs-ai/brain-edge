@@ -10,7 +10,6 @@
 
 ### Features
 
-* **byok:** seal tenant provider keys in the edge and broker them upstream ([516aff5](https://github.com/arc-labs-ai/brain-edge/commit/516aff5a0d3038d99ff28b7898c4c09893a753fd))
 * **byok:** seal tenant provider keys in the edge and broker them upstream ([96ad50d](https://github.com/arc-labs-ai/brain-edge/commit/96ad50d8c4a851f74b806c00eea3a5881b21759d))
 
 
