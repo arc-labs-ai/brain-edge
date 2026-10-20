@@ -18,6 +18,7 @@
 
 pub mod app;
 pub mod config;
+pub mod crypto;
 pub mod dto;
 pub mod error;
 pub mod pool;
@@ -140,7 +141,30 @@ pub async fn run(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
         capacity: config.wire_rate_capacity,
         refill_per_sec: config.wire_rate_refill_per_sec,
     };
+    // BYOK: install the key ring when one is configured. Absent, the edge runs
+    // exactly as before and refuses to store provider keys at all — it never
+    // falls back to holding them in the clear.
+    //
+    // The self-host default store is process-local, so a restart drops every
+    // registered key. That is said out loud at startup rather than discovered
+    // when writes begin failing; a durable store is injected by the gateway.
+    let keyring = crypto::keyring_from_env().map_err(|e| format!("llm kek: {e}"))?;
     let state = EdgeState::new(config);
+    let state = if let Some(ring) = keyring {
+        {
+            tracing::info!(
+                kek_id = ring.current_kek_id(),
+                "BYOK enabled: provider keys sealed at the edge",
+            );
+            state.with_llm_credentials(byok_store()?, std::sync::Arc::new(ring))
+        }
+    } else {
+        tracing::info!(
+            "BYOK disabled: set {} to enable tenant provider keys",
+            crypto::KEK_SPEC_ENV,
+        );
+        state
+    };
 
     // The transparent wire-protocol proxy is a second listener alongside HTTP.
     // Opt-in (only when an address is configured); it reuses the state's metering
@@ -184,8 +208,14 @@ pub async fn run(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
         .route("/health/ready", get(readiness))
         .with_state(state.clone());
 
+    // One binary, two deployable planes. Default `Both` so a self-host
+    // operator never has to think about it; production splits them to keep
+    // tenants' provider keys out of the process carrying memory traffic.
+    let plane = app::Plane::from_env().map_err(|e| format!("{}: {e}", app::PLANE_ENV))?;
+    tracing::info!(?plane, "serving plane");
+
     let app = harden(
-        app::router(state).merge(health),
+        app::router_for(state, plane).merge(health),
         request_timeout,
         max_body_bytes,
     );
@@ -233,5 +263,40 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => info!("SIGINT received, shutting down"),
         () = terminate => info!("SIGTERM received, shutting down"),
+    }
+}
+
+/// Env var pointing at a durable BYOK credential file.
+pub const CREDENTIAL_STORE_ENV: &str = "BRAIN_EDGE_LLM_CREDENTIAL_FILE";
+
+/// Pick the credential store for this process.
+///
+/// A path gives a durable, file-backed store; without one the store is
+/// in-memory and every registered key is lost on restart — which then fails
+/// the whole write path until each tenant re-registers.
+///
+/// The in-memory case stays available because requiring a path to try BYOK
+/// would be obnoxious, but it warns loudly rather than letting an operator
+/// discover the property during an incident.
+fn byok_store() -> Result<std::sync::Arc<dyn port::LlmCredentialStore>, Box<dyn std::error::Error>>
+{
+    match std::env::var(CREDENTIAL_STORE_ENV) {
+        Ok(path) if !path.trim().is_empty() => {
+            let store = port::FileLlmCredentialStore::open(path.trim())
+                .map_err(|e| format!("{CREDENTIAL_STORE_ENV}: {e}"))?;
+            tracing::info!(path = %path.trim(), "BYOK credential store: file-backed");
+            Ok(std::sync::Arc::new(store))
+        }
+        _ => {
+            tracing::warn!(
+                "BYOK credential store is IN-MEMORY: registered provider keys are lost on \
+                 restart, and writes then fail until every tenant re-registers. Set {} to a \
+                 file path, or inject a durable LlmCredentialStore.",
+                CREDENTIAL_STORE_ENV,
+            );
+            Ok(std::sync::Arc::new(
+                port::InMemoryLlmCredentialStore::default(),
+            ))
+        }
     }
 }

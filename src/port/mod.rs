@@ -8,6 +8,10 @@
 //! Both ports are trait objects held in [`crate::EdgeState`], so the router and
 //! handlers stay non-generic and the host app plugs in behavior at construction.
 
+pub mod file_store;
+
+pub use file_store::FileLlmCredentialStore;
+
 use axum::http::{HeaderMap, header};
 
 use crate::error::ApiError;
@@ -71,6 +75,112 @@ pub trait MeteringSink: Send + Sync + 'static {
     fn record(&self, event: &MeterEvent<'_>);
 }
 
+/// A tenant's stored LLM provider credential, as it is persisted.
+///
+/// Carries **no plaintext**: the provider key lives only in `sealed`, and only
+/// [`crate::crypto::KeyRing`] — which holds the key-encryption key in this
+/// process — can open it. Everything else here is metadata safe to store and
+/// to show an operator.
+#[derive(Clone, Debug)]
+pub struct StoredLlmCredential {
+    /// Provider this key is for (`"openai"`, `"anthropic"`).
+    pub provider: String,
+    /// Model the tenant registered the key for. The resolver hands this to
+    /// Brain so extraction and HyPE run on a model the key can actually pay
+    /// for.
+    pub model: String,
+    /// The sealed provider key. Ciphertext only.
+    pub sealed: crate::crypto::SealedSecret,
+    /// Display-safe tail of the key (e.g. `sk-…4f2a`), so a dashboard can show
+    /// *which* key is installed without the key itself ever being readable
+    /// again. Never reconstructable into the original.
+    pub fingerprint: String,
+    /// When this credential was stored, unix seconds.
+    pub created_at_unix_secs: u64,
+}
+
+/// Persist tenants' sealed LLM provider credentials.
+///
+/// **The implementation never sees a plaintext key.** Sealing and opening both
+/// happen in the edge, against a key-encryption key that lives in this
+/// process's configuration and never in its data — so whatever backs this port
+/// (Postgres in the hosted gateway, a file in self-host) holds ciphertext and
+/// nothing else. A database compromise therefore yields no usable provider
+/// keys.
+///
+/// Keyed by namespace: one registered credential per tenant.
+#[async_trait::async_trait]
+pub trait LlmCredentialStore: Send + Sync + 'static {
+    /// Store (or replace) `namespace`'s credential.
+    async fn put(&self, namespace: &str, record: StoredLlmCredential) -> Result<(), ApiError>;
+    /// Fetch `namespace`'s credential, or `None` when the tenant has not
+    /// registered one. `None` is the signal that drives
+    /// `llm_credential.missing` back to the caller.
+    async fn get(&self, namespace: &str) -> Result<Option<StoredLlmCredential>, ApiError>;
+    /// Remove `namespace`'s credential. Returns whether a record existed, so a
+    /// delete can be reported honestly rather than always 204.
+    async fn delete(&self, namespace: &str) -> Result<bool, ApiError>;
+}
+
+/// The self-host default store: process-local, lost on restart.
+///
+/// Chosen over a "refuse everything" default so a self-host operator can try
+/// BYOK without standing up a database — but it is **not** durable, and the
+/// hosted gateway injects a persistent implementation. A restart drops every
+/// registered key, and writes fail the whole ENCODE path until they are
+/// re-registered, which is why this says so loudly rather than quietly losing
+/// data.
+#[derive(Debug, Default)]
+pub struct InMemoryLlmCredentialStore {
+    records: std::sync::RwLock<std::collections::HashMap<String, StoredLlmCredential>>,
+}
+
+#[async_trait::async_trait]
+impl LlmCredentialStore for InMemoryLlmCredentialStore {
+    async fn put(&self, namespace: &str, record: StoredLlmCredential) -> Result<(), ApiError> {
+        let mut guard = self
+            .records
+            .write()
+            .map_err(|_| ApiError::internal("credential store lock poisoned"))?;
+        guard.insert(namespace.to_string(), record);
+        Ok(())
+    }
+
+    async fn get(&self, namespace: &str) -> Result<Option<StoredLlmCredential>, ApiError> {
+        let guard = self
+            .records
+            .read()
+            .map_err(|_| ApiError::internal("credential store lock poisoned"))?;
+        Ok(guard.get(namespace).cloned())
+    }
+
+    async fn delete(&self, namespace: &str) -> Result<bool, ApiError> {
+        let mut guard = self
+            .records
+            .write()
+            .map_err(|_| ApiError::internal("credential store lock poisoned"))?;
+        Ok(guard.remove(namespace).is_some())
+    }
+}
+
+/// Display-safe tail of a provider key.
+///
+/// Shows enough to tell two keys apart and nothing more: the last four
+/// characters, which do not narrow a brute force meaningfully, behind an
+/// ellipsis. Short keys render fully masked rather than mostly revealed — a
+/// 6-character key would otherwise expose most of itself.
+#[must_use]
+pub fn key_fingerprint(key: &str) -> String {
+    const TAIL: usize = 4;
+    // Count characters, not bytes: a multi-byte tail must not slice mid-char.
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= TAIL * 2 {
+        return "…".to_string();
+    }
+    let tail: String = chars[chars.len() - TAIL..].iter().collect();
+    format!("…{tail}")
+}
+
 /// The self-host default resolver: forward `Authorization: Bearer <key>` (or
 /// `X-API-Key`) to Brain, which resolves the identity itself.
 #[derive(Debug)]
@@ -122,4 +232,127 @@ pub fn bearer_token(headers: &HeaderMap) -> Result<String, ApiError> {
     Err(ApiError::unauthorized(
         "missing API key — send `Authorization: Bearer <key>` or `X-API-Key`",
     ))
+}
+
+#[cfg(test)]
+mod byok_tests {
+    use super::*;
+
+    #[test]
+    fn a_fingerprint_reveals_only_the_tail() {
+        let fp = key_fingerprint("sk-proj-abcdefghijklmnop4f2a");
+        assert_eq!(fp, "…4f2a");
+        assert!(!fp.contains("abcdefgh"), "body must not appear: {fp}");
+    }
+
+    #[test]
+    fn a_short_key_is_fully_masked() {
+        // A 6-character key with a 4-character tail would expose most of
+        // itself, so short inputs render with no tail at all.
+        assert_eq!(key_fingerprint("sk-abc"), "…");
+        assert_eq!(key_fingerprint(""), "…");
+        assert_eq!(key_fingerprint("12345678"), "…", "boundary: exactly 2*TAIL");
+        assert_eq!(
+            key_fingerprint("123456789"),
+            "…6789",
+            "one over the boundary"
+        );
+    }
+
+    #[test]
+    fn a_multibyte_key_does_not_panic_on_the_tail() {
+        // Slicing by byte would split a multi-byte char and panic; the
+        // fingerprint counts characters.
+        let fp = key_fingerprint("sk-ключ-日本語テスト");
+        assert!(fp.starts_with('…'));
+    }
+
+    #[tokio::test]
+    async fn the_in_memory_store_round_trips_and_deletes() {
+        use crate::crypto::{KeyRing, SecretBinding};
+        use zeroize::Zeroizing;
+
+        let ring = KeyRing::new(
+            [(
+                "k1".to_string(),
+                Zeroizing::new(vec![9u8; crate::crypto::KEK_LEN]),
+            )],
+            "k1",
+        )
+        .unwrap();
+        let binding = SecretBinding {
+            namespace: "acme",
+            provider: "openai",
+        };
+        let sealed = ring.seal(b"sk-live-secret", binding).unwrap();
+
+        let store = InMemoryLlmCredentialStore::default();
+        assert!(store.get("acme").await.unwrap().is_none(), "empty to start");
+
+        store
+            .put(
+                "acme",
+                StoredLlmCredential {
+                    provider: "openai".into(),
+                    model: "gpt-4o-mini".into(),
+                    sealed: sealed.clone(),
+                    fingerprint: key_fingerprint("sk-live-secret"),
+                    created_at_unix_secs: 1,
+                },
+            )
+            .await
+            .unwrap();
+
+        let got = store.get("acme").await.unwrap().expect("stored");
+        assert_eq!(got.model, "gpt-4o-mini");
+        // What comes back out of the store is still ciphertext — it only
+        // becomes a key by going through the keyring.
+        assert_eq!(
+            &*ring.open(&got.sealed, binding).unwrap(),
+            b"sk-live-secret"
+        );
+
+        assert!(store.delete("acme").await.unwrap(), "existed");
+        assert!(
+            !store.delete("acme").await.unwrap(),
+            "second delete is false"
+        );
+        assert!(store.get("acme").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn one_tenants_credential_is_not_visible_to_another() {
+        let store = InMemoryLlmCredentialStore::default();
+        let ring = crate::crypto::KeyRing::new(
+            [(
+                "k1".to_string(),
+                zeroize::Zeroizing::new(vec![3u8; crate::crypto::KEK_LEN]),
+            )],
+            "k1",
+        )
+        .unwrap();
+        let sealed = ring
+            .seal(
+                b"acme-key",
+                crate::crypto::SecretBinding {
+                    namespace: "acme",
+                    provider: "openai",
+                },
+            )
+            .unwrap();
+        store
+            .put(
+                "acme",
+                StoredLlmCredential {
+                    provider: "openai".into(),
+                    model: "gpt-4o-mini".into(),
+                    sealed,
+                    fingerprint: "…key".into(),
+                    created_at_unix_secs: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.get("globex").await.unwrap().is_none());
+    }
 }
