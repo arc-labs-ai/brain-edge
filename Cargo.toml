@@ -56,7 +56,7 @@ arc-swap = "1"
 # 0.2.0 is a breaking release: `whoami` reports named permission booleans in
 # place of the raw bitset, and the LLM credential error codes the BYOK handlers
 # map arrived with it.
-brain-db-sdk = "0.2.0"
+brain-db-sdk = "0.2.1"
 
 # ---------------------------------------------------------------------------
 # Lints.
