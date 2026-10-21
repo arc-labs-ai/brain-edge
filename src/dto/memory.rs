@@ -10,10 +10,10 @@
 
 use brain_db_sdk::RecallAnswer;
 use brain_db_sdk::wire::types::{
-    AnswerKindWire, EncodeGraphEdge, EncodeGraphNode, EncodeResponse, EncodeStageArtifact,
-    EncodeStageGraph, EncodeStageKeywordField, EncodeStageRecord, ForgetResponse,
-    MemoryInspectResponse, MemoryListDirWire, MemoryListItem, MemoryListRequest,
-    MemoryListSortWire, MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
+    AnswerKindWire, EdgeDirectionWire, EncodeGraphEdge, EncodeGraphNode, EncodeResponse,
+    EncodeStageArtifact, EncodeStageGraph, EncodeStageKeywordField, EncodeStageRecord,
+    ForgetResponse, MemoryEdgeWire, MemoryInspectResponse, MemoryListDirWire, MemoryListItem,
+    MemoryListRequest, MemoryListSortWire, MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -300,6 +300,47 @@ pub struct MemoryInspectDto {
     pub memory_id: String,
     pub text: String,
     pub artifact: StageArtifactDto,
+    /// Memory↔memory edges anchored at this memory, both directions.
+    ///
+    /// This is the read side of `POST /v1/links`. `artifact.graph` is a
+    /// different thing — the extractor's write-time knowledge graph — and an
+    /// edge asserted with `/v1/links` never appears there, which left linking
+    /// write-only over HTTP.
+    pub edges: Vec<MemoryEdgeDto>,
+}
+
+/// One memory↔memory edge.
+///
+/// `peer` is a decimal string like `memory_id`, so it can be fed straight
+/// back into `/v1/memories/{id}` or `/v1/links` without conversion.
+#[derive(Debug, Serialize)]
+pub struct MemoryEdgeDto {
+    /// Snake-case kind name — the same vocabulary `POST /v1/links` accepts.
+    pub kind: &'static str,
+    /// `outgoing` = this memory is the edge's source.
+    pub direction: &'static str,
+    /// Decimal string of the memory at the other end.
+    pub peer: String,
+    pub weight: f32,
+    pub created_at_unix_nanos: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<String>,
+}
+
+impl From<MemoryEdgeWire> for MemoryEdgeDto {
+    fn from(e: MemoryEdgeWire) -> Self {
+        Self {
+            kind: super::graph::edge_kind_str(e.kind),
+            direction: match e.direction {
+                EdgeDirectionWire::Outgoing => "outgoing",
+                EdgeDirectionWire::Incoming => "incoming",
+            },
+            peer: e.peer.to_string(),
+            weight: e.weight,
+            created_at_unix_nanos: e.created_at_unix_nanos,
+            annotation: e.annotation,
+        }
+    }
 }
 
 impl From<MemoryInspectResponse> for MemoryInspectDto {
@@ -309,6 +350,7 @@ impl From<MemoryInspectResponse> for MemoryInspectDto {
             memory_id: mem_id_decimal(&r.memory_id),
             text: r.text,
             artifact: StageArtifactDto::from(r.artifact),
+            edges: r.edges.into_iter().map(MemoryEdgeDto::from).collect(),
         }
     }
 }
@@ -459,9 +501,10 @@ mod memory_tests {
     use super::*;
     use brain_db_sdk::RecallAnswer;
     use brain_db_sdk::wire::types::{
-        EncodeGraphEdge, EncodeGraphNode, EncodeResponse, EncodeStageArtifact, EncodeStageGraph,
-        EncodeStageKeywordField, EncodeStageRecord, ForgetResponse, MemoryInspectResponse,
-        MemoryKindWire, MemoryListItem, MemoryListResponseFrame, MemoryResult,
+        EdgeKindWire, EncodeGraphEdge, EncodeGraphNode, EncodeResponse, EncodeStageArtifact,
+        EncodeStageGraph, EncodeStageKeywordField, EncodeStageRecord, ForgetResponse,
+        MemoryInspectResponse, MemoryKindWire, MemoryListItem, MemoryListResponseFrame,
+        MemoryResult,
     };
 
     fn sample_result(tag: u8, text: &str) -> MemoryResult {
@@ -713,6 +756,24 @@ mod memory_tests {
                     }],
                 }),
             },
+            edges: vec![
+                MemoryEdgeWire {
+                    kind: EdgeKindWire::Caused,
+                    direction: EdgeDirectionWire::Outgoing,
+                    peer: 42,
+                    weight: 0.75,
+                    created_at_unix_nanos: 900,
+                    annotation: Some("manually asserted".into()),
+                },
+                MemoryEdgeWire {
+                    kind: EdgeKindWire::Supports,
+                    direction: EdgeDirectionWire::Incoming,
+                    peer: 7,
+                    weight: 0.25,
+                    created_at_unix_nanos: 901,
+                    annotation: None,
+                },
+            ],
         };
         let dto = MemoryInspectDto::from(resp);
         assert!(dto.found);
@@ -725,5 +786,25 @@ mod memory_tests {
         assert_eq!(graph.edges[0].source, "11".repeat(16));
         assert_eq!(graph.edges[0].target, "22".repeat(16));
         assert_eq!(graph.edges[0].event_at_unix_nanos, Some(123));
+
+        // The memory-edge read side: both directions survive, the kind keeps
+        // the wire vocabulary `POST /v1/links` accepts, and `peer` is the
+        // decimal form that can be fed straight back into a path parameter.
+        // `artifact.graph` above is a different thing entirely — these two must
+        // not be conflated, which is why both are asserted in one test.
+        assert_eq!(dto.edges.len(), 2);
+        assert_eq!(dto.edges[0].kind, "caused");
+        assert_eq!(dto.edges[0].direction, "outgoing");
+        assert_eq!(dto.edges[0].peer, "42");
+        assert_eq!(dto.edges[0].weight, 0.75);
+        assert_eq!(dto.edges[0].created_at_unix_nanos, 900);
+        assert_eq!(
+            dto.edges[0].annotation.as_deref(),
+            Some("manually asserted")
+        );
+        assert_eq!(dto.edges[1].kind, "supports");
+        assert_eq!(dto.edges[1].direction, "incoming");
+        assert_eq!(dto.edges[1].peer, "7");
+        assert!(dto.edges[1].annotation.is_none());
     }
 }

@@ -33,7 +33,7 @@ fn parse_edge_kind(s: &str) -> Result<EdgeKindWire, String> {
 }
 
 /// Render an edge kind as its snake-case name.
-fn edge_kind_str(k: EdgeKindWire) -> &'static str {
+pub(crate) fn edge_kind_str(k: EdgeKindWire) -> &'static str {
     match k {
         EdgeKindWire::Caused => "caused",
         EdgeKindWire::FollowedBy => "followed_by",
