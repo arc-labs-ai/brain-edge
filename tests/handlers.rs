@@ -26,19 +26,19 @@ use brain_db_sdk::wire::cbor::{from_cbor_bytes, to_cbor_bytes};
 use brain_db_sdk::wire::frame::{FLAG_EOS, Frame};
 use brain_db_sdk::wire::opcode::Opcode;
 use brain_db_sdk::wire::types::{
-    AuthOkPayload, AuthPayload, Capabilities, EdgeKindWire, EncodeResponse, EncodeStageArtifact,
-    EntityCreateResponse, EntityGetResponse, EntityListItem, EntityListResponseFrame,
-    EntityResolveResponse, EntityView, EvidenceRefWire, ForgetResponse, GetCapabilitiesResponse,
-    GraphEdge, GraphFetchResponseFrame, GraphNode, HelloPayload, InferenceKind, InferenceStep,
-    LinkResponse, MemoryInspectResponse, MemoryKindWire, MemoryListItem, MemoryListResponseFrame,
-    MemoryResult, PlanResponseFrame, PlanStatus, PlanStep, ReasonResponseFrame, ReasonStatus,
-    RecallResponseFrame, RelationGetResponse, RelationListFromResponseFrame,
-    RelationListToResponseFrame, RelationTraverseResponseFrame, RelationView,
-    ResolutionOutcomeWire, SchemaGetResponse, SchemaReplaceResponse, SchemaUploadResponse,
-    SchemaValidateResponse, ServerFeatures, SpacePermissions, StatementGetResponse,
-    StatementKindWire, StatementListResponseFrame, StatementObjectWire, StatementValueWire,
-    StatementView, TransitionKind, TraversalPathWire, TraversalStepWire, UnlinkResponse,
-    WelcomePayload,
+    AuthOkPayload, AuthPayload, Capabilities, EdgeDirectionWire, EdgeKindWire, EncodeResponse,
+    EncodeStageArtifact, EntityCreateResponse, EntityGetResponse, EntityListItem,
+    EntityListResponseFrame, EntityResolveResponse, EntityView, EvidenceRefWire, ForgetResponse,
+    GetCapabilitiesResponse, GraphEdge, GraphFetchResponseFrame, GraphNode, HelloPayload,
+    InferenceKind, InferenceStep, LinkResponse, MemoryEdgeWire, MemoryInspectResponse,
+    MemoryKindWire, MemoryListItem, MemoryListResponseFrame, MemoryResult, PlanResponseFrame,
+    PlanStatus, PlanStep, ReasonResponseFrame, ReasonStatus, RecallResponseFrame,
+    RelationGetResponse, RelationListFromResponseFrame, RelationListToResponseFrame,
+    RelationTraverseResponseFrame, RelationView, ResolutionOutcomeWire, SchemaGetResponse,
+    SchemaReplaceResponse, SchemaUploadResponse, SchemaValidateResponse, ServerFeatures,
+    SpacePermissions, StatementGetResponse, StatementKindWire, StatementListResponseFrame,
+    StatementObjectWire, StatementValueWire, StatementView, TransitionKind, TraversalPathWire,
+    TraversalStepWire, UnlinkResponse, WelcomePayload,
 };
 use brain_edge::port::{CredentialResolver, MeterEvent, MeteringSink, Outcome, ResolvedCredential};
 use brain_edge::{ApiError, EdgeConfig, EdgeState};
@@ -541,6 +541,27 @@ async fn dispatch_memory_ops(sock: &mut TcpStream, f: &Frame) {
                     keyword_fields: Vec::new(),
                     graph: None,
                 },
+                // Both directions, and one edge with an annotation: the read
+                // side of `POST /v1/links`, which had no HTTP reader at all
+                // until MEMORY_INSPECT started returning it.
+                edges: vec![
+                    MemoryEdgeWire {
+                        kind: EdgeKindWire::Caused,
+                        direction: EdgeDirectionWire::Outgoing,
+                        peer: 77,
+                        weight: 0.5,
+                        created_at_unix_nanos: 1_000,
+                        annotation: Some("manually asserted".into()),
+                    },
+                    MemoryEdgeWire {
+                        kind: EdgeKindWire::Supports,
+                        direction: EdgeDirectionWire::Incoming,
+                        peer: 78,
+                        weight: 0.25,
+                        created_at_unix_nanos: 1_001,
+                        annotation: None,
+                    },
+                ],
             },
         )
         .await;
@@ -1079,6 +1100,22 @@ async fn memory_inspect_returns_artifact_bundle() {
         .as_array()
         .expect("hype array");
     assert_eq!(hype[0], "who works where?");
+
+    // `artifact.graph` is the extractor's write-time graph; `edges` is the
+    // memory-to-memory graph asserted through `/v1/links`. Different things,
+    // and this route is the only HTTP reader of the second one.
+    let edges = body["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 2);
+    assert_eq!(edges[0]["kind"], "caused");
+    assert_eq!(edges[0]["direction"], "outgoing");
+    assert_eq!(edges[0]["peer"], "77");
+    assert_eq!(edges[0]["annotation"], "manually asserted");
+    assert_eq!(edges[1]["kind"], "supports");
+    assert_eq!(edges[1]["direction"], "incoming");
+    assert_eq!(edges[1]["peer"], "78");
+    // Omitted, not null, when there is no annotation.
+    assert!(edges[1].get("annotation").is_none());
+
     assert_eq!(meter.ops(), vec!["memory_inspect"]);
 }
 

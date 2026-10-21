@@ -56,7 +56,11 @@ arc-swap = "1"
 # 0.2.0 is a breaking release: `whoami` reports named permission booleans in
 # place of the raw bitset, and the LLM credential error codes the BYOK handlers
 # map arrived with it.
-brain-db-sdk = "0.2.1"
+#
+# 0.3.0 is the next breaking release: `MemoryInspectResponse` grew an `edges`
+# field, which is what `GET /v1/memories/{id}` now serves as `edges` — the read
+# side of `POST /v1/links`, which was write-only over HTTP until it shipped.
+brain-db-sdk = "0.3.0"
 
 # ---------------------------------------------------------------------------
 # Lints.
