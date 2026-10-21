@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/arc-labs-ai/brain-edge/compare/v0.2.0...v0.2.1) (2026-10-21)
+
+
+### Build and tooling
+
+* **deps:** clear six security advisories and take brain-db-sdk 0.2.1 ([94e3a10](https://github.com/arc-labs-ai/brain-edge/commit/94e3a10f2bd3d4f624514b6f4002d0533390b608))
+* **deps:** clear six security advisories and take brain-db-sdk 0.2.1 ([c39eea4](https://github.com/arc-labs-ai/brain-edge/commit/c39eea49748557534a90cdcaa71096ff6e3a5608))
+
 ## [0.2.0](https://github.com/arc-labs-ai/brain-edge/compare/v0.1.0...v0.2.0) (2026-10-20)
 
 
