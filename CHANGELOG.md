@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/arc-labs-ai/brain-edge/compare/v0.2.1...v0.3.0) (2026-10-21)
+
+
+### Features
+
+* **memory:** serve memory edges on inspect, off the published SDK 0.3.0 ([9cfe596](https://github.com/arc-labs-ai/brain-edge/commit/9cfe596118b4f2d34183d9cc55faec8629e1f497))
+
 ## [0.2.1](https://github.com/arc-labs-ai/brain-edge/compare/v0.2.0...v0.2.1) (2026-10-21)
 
 
