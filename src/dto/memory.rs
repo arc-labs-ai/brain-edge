@@ -30,7 +30,14 @@ pub struct EncodeBody {
     #[serde(default)]
     pub session: Option<u64>,
     /// Optional event time (unix nanos).
-    #[serde(default)]
+    ///
+    /// `occurred_at_unix_nanos` is the name the rest of the contract uses —
+    /// the read side of this same value is `MemoryListItemDto
+    /// .occurred_at_unix_nanos`, and every other temporal field carries its
+    /// unit. Both spellings are accepted rather than renaming: the short one
+    /// is long-standing public wire, and breaking it to fix a name would cost
+    /// more than the inconsistency does.
+    #[serde(default, alias = "occurred_at_unix_nanos")]
     pub occurred_at: Option<u64>,
 }
 

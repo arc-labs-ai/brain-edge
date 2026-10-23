@@ -18,10 +18,10 @@
 #![allow(missing_docs)]
 
 use brain_db_sdk::wire::types::{
-    ExtractorListRequest, ExtractorListResponseFrame, SchemaGetRequest, SchemaGetResponse,
-    SchemaListRequest, SchemaListResponseFrame, SchemaReplaceRequest, SchemaReplaceResponse,
-    SchemaUploadRequest, SchemaUploadResponse, SchemaValidateRequest, SchemaValidateResponse,
-    SchemaValidationErrorWire,
+    ExtractorListRequest, ExtractorListResponseFrame, SchemaDropRequest, SchemaDropResponse,
+    SchemaGetRequest, SchemaGetResponse, SchemaListRequest, SchemaListResponseFrame,
+    SchemaReplaceRequest, SchemaReplaceResponse, SchemaUploadRequest, SchemaUploadResponse,
+    SchemaValidateRequest, SchemaValidateResponse, SchemaValidationErrorWire, schema_drop_target,
 };
 use serde::{Deserialize, Serialize};
 
@@ -532,4 +532,90 @@ impl From<ExtractorListResponseFrame> for ListExtractorsResponseDto {
 #[must_use]
 pub fn extractor_list_request() -> ExtractorListRequest {
     ExtractorListRequest {}
+}
+
+// --- Drop -------------------------------------------------------------------
+
+/// `DELETE /v1/schema/{kind}/{name}` query.
+#[derive(Debug, Default, Deserialize)]
+pub struct SchemaDropQuery {
+    /// Drop even while live rows still use the type.
+    ///
+    /// Required only when there ARE live rows: without it such a drop is
+    /// rejected and mutates nothing, while a type nothing uses drops freely.
+    /// So this is not a "yes I'm sure" flag — it is specifically consent to
+    /// orphan existing rows, which survive as plain memories no longer
+    /// enriched from the typed-graph tables.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Map the path segment to the wire's target discriminant.
+///
+/// Entity types are deliberately absent, matching the wire: they are global
+/// in the v1 storage model, so dropping one would race rows in other
+/// namespaces that reference the same shared type.
+fn drop_target(raw: &str) -> Result<u8, String> {
+    Ok(match raw.trim() {
+        "predicate" => schema_drop_target::PREDICATE,
+        "relation_type" => schema_drop_target::RELATION_TYPE,
+        other => {
+            return Err(format!(
+                "`{other}` is not a droppable kind — use `predicate` or `relation_type`"
+            ));
+        }
+    })
+}
+
+impl SchemaDropQuery {
+    /// Build the wire request for `kind`/`name`. The namespace is the
+    /// caller's own; `act_as` pins it.
+    ///
+    /// # Errors
+    /// An unknown kind, or a blank name.
+    pub fn to_request(&self, kind: &str, name: &str) -> Result<SchemaDropRequest, String> {
+        let target_name = name.trim().to_owned();
+        if target_name.is_empty() {
+            return Err("name must not be blank".into());
+        }
+        Ok(SchemaDropRequest {
+            namespace: String::new(),
+            target_kind: drop_target(kind)?,
+            target_name,
+            force: self.force,
+            request_id: brain_db_sdk::new_id(),
+            act_as: None,
+        })
+    }
+}
+
+/// `DELETE /v1/schema/{kind}/{name}` response.
+#[derive(Debug, Serialize)]
+pub struct SchemaDropResponseDto {
+    pub namespace: String,
+    /// The new active version, or `0` when nothing was dropped.
+    pub schema_version: u32,
+    pub target_kind: u8,
+    pub target_name: String,
+    /// `false` with `live_rows > 0` means the type is still in use and
+    /// `force` was not set — nothing was changed.
+    pub dropped: bool,
+    /// Live rows on the type. After a forced drop these are the rows now
+    /// orphaned.
+    pub live_rows: u32,
+    pub validation_errors: Vec<SchemaErrorDto>,
+}
+
+impl From<SchemaDropResponse> for SchemaDropResponseDto {
+    fn from(r: SchemaDropResponse) -> Self {
+        Self {
+            namespace: r.namespace,
+            schema_version: r.schema_version,
+            target_kind: r.target_kind,
+            target_name: r.target_name,
+            dropped: r.dropped,
+            live_rows: r.live_rows,
+            validation_errors: errors(&r.validation_errors),
+        }
+    }
 }

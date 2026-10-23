@@ -32,9 +32,14 @@ const MAX_LIST_LIMIT: u32 = 500;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CreateSpaceBody {
-    /// Opaque caller metadata (quota hints, labels) that Brain stores and
-    /// echoes back. Sent as a UTF-8 string here and carried as bytes on the
-    /// wire.
+    /// Opaque caller metadata (quota hints, labels), sent as a UTF-8 string
+    /// here and carried as bytes on the wire.
+    ///
+    /// WRITE-ONLY. Brain accepts and stores it, but no op returns it —
+    /// neither `SPACE_CREATE`'s response nor `SPACE_LIST`'s view carries the
+    /// blob — so a caller that needs to read its own metadata back has to
+    /// keep it elsewhere. Said plainly because the obvious assumption is that
+    /// something you can write is something you can read.
     #[serde(default)]
     pub metadata: Option<String>,
 }

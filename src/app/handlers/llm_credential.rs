@@ -23,7 +23,7 @@ use brain_db_sdk::wire::types::GetCapabilitiesRequest;
 use crate::app::handlers::llm_proxy::{KeyCheck, Upstream};
 use crate::crypto::SecretBinding;
 use crate::dto::llm_credential::{
-    DeleteLlmCredentialDto, LlmCredentialDto, PutLlmCredentialRequest,
+    DeleteLlmCredentialDto, LlmCredentialCheckDto, LlmCredentialDto, PutLlmCredentialRequest,
 };
 use crate::error::ApiError;
 use crate::port::{LlmCredentialStore, StoredLlmCredential, key_fingerprint};
@@ -164,4 +164,74 @@ pub async fn delete(
         tracing::info!(namespace = %namespace, "BYOK provider key removed");
     }
     Ok(Json(DeleteLlmCredentialDto { deleted }))
+}
+
+/// Probe a key against its provider and project the outcome.
+///
+/// Shared by `test` (a key the caller supplies) and `verify` (the one
+/// already stored), so the two cannot drift in how they classify a provider's
+/// answer.
+async fn probe(provider: &str, key: &str) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
+    let upstream = Upstream::from_name(provider).ok_or_else(|| {
+        // A provider this build cannot route is version skew, not a bad key —
+        // reporting it as `rejected` would send an operator hunting for a
+        // typo that is not there.
+        ApiError::internal(format!(
+            "provider `{provider}` is not routable by this build"
+        ))
+    })?;
+    let check = crate::app::handlers::llm_proxy::validate_key(upstream, key).await;
+    Ok(Json(LlmCredentialCheckDto::from_check(check, provider)))
+}
+
+/// `POST /v1/llm-credential/test` — check a key WITHOUT storing it.
+///
+/// For trying a key before committing to it. Nothing is written and nothing
+/// existing is touched, so this is safe to call against a namespace that
+/// already has a working credential.
+///
+/// # Errors
+/// `400` on a malformed body, `501` when BYOK is unconfigured.
+pub async fn test(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    Json(body): Json<PutLlmCredentialRequest>,
+) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
+    let provider = body.validate().map_err(ApiError::bad_request)?;
+    // Gated on BYOK being configured even though nothing is stored: an edge
+    // that cannot hold a key has no business probing providers on a caller's
+    // behalf, and answering here would imply a registration that will 501.
+    let _ = store_of(&state)?;
+    let _namespace = caller_namespace(&state, &headers).await?;
+    probe(provider, &body.api_key).await
+}
+
+/// `POST /v1/llm-credential/verify` — re-check the key already stored.
+///
+/// A key that worked at registration can be revoked or run out of credit
+/// later, and without this the first sign of it is an opaque upstream 401 on
+/// a write — which reads like a Brain fault rather than an expired secret.
+///
+/// # Errors
+/// `404` when nothing is registered, `501` when BYOK is unconfigured.
+pub async fn verify(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
+    let store = store_of(&state)?;
+    let namespace = caller_namespace(&state, &headers).await?;
+    let record = store.get(&namespace).await?.ok_or_else(|| {
+        ApiError::not_found("no LLM provider key is registered for this namespace")
+    })?;
+
+    let opened = state.open_llm_key(
+        &record.sealed,
+        SecretBinding {
+            namespace: &namespace,
+            provider: &record.provider,
+        },
+    )?;
+    let key = String::from_utf8(opened.to_vec())
+        .map_err(|_| ApiError::internal("stored provider key is not valid UTF-8"))?;
+    probe(&record.provider, &key).await
 }

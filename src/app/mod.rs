@@ -120,6 +120,18 @@ fn credential_router() -> Router<EdgeState> {
                 .get(handlers::llm_credential::get)
                 .delete(handlers::llm_credential::delete),
         )
+        // Checking a key: `test` probes one the caller supplies without
+        // storing it, `verify` re-probes the one already stored. A key that
+        // worked at registration can be revoked later, and without these the
+        // first sign is an opaque upstream 401 on a write.
+        .route(
+            "/v1/llm-credential/test",
+            post(handlers::llm_credential::test),
+        )
+        .route(
+            "/v1/llm-credential/verify",
+            post(handlers::llm_credential::verify),
+        )
         // The broker. Paths mirror each provider's native shape so Brain's
         // existing provider clients work by pointing `base_url` here.
         .route(
@@ -225,6 +237,9 @@ fn data_router() -> Router<EdgeState> {
                 .put(handlers::schema::replace),
         )
         .route("/v1/schema/validate", post(handlers::schema::validate))
+        // Surgical drop of one declared type — the per-type counterpart to
+        // PUT, which replaces the whole document.
+        .route("/v1/schema/{kind}/{name}", delete(handlers::schema::drop))
         // Schema version history — distinct from `/v1/schema`, which is one
         // document.
         // Query-plan introspection. Explain plans without running; trace

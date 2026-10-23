@@ -15,6 +15,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::handlers::llm_proxy::KeyCheck;
+
 use crate::port::StoredLlmCredential;
 
 /// The providers a tenant may register a key for.
@@ -217,5 +219,57 @@ mod tests {
         let json = serde_json::to_string(&dto).unwrap();
         assert!(json.contains("…4f2a"));
         assert!(!json.contains("api_key"), "{json}");
+    }
+}
+
+/// `POST /v1/llm-credential/{test,verify}` response — what the provider said
+/// about a key.
+///
+/// Three outcomes, not two. "The provider says this key is bad" and "I could
+/// not reach the provider" demand opposite responses, and collapsing them
+/// would either accept dead keys during an outage or refuse good ones during
+/// someone else's incident.
+#[derive(Debug, Serialize)]
+pub struct LlmCredentialCheckDto {
+    /// `valid` | `rejected` | `unreachable`.
+    pub status: &'static str,
+    /// Whether the key is usable. `false` for `rejected`; for `unreachable`
+    /// this is `null`, because nothing was learned about the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid: Option<bool>,
+    /// What went wrong, when something did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The provider that was probed.
+    pub provider: String,
+}
+
+impl LlmCredentialCheckDto {
+    /// Project a probe outcome, naming the provider that was asked.
+    #[must_use]
+    pub fn from_check(check: KeyCheck, provider: &str) -> Self {
+        let provider = provider.to_owned();
+        match check {
+            KeyCheck::Valid => Self {
+                status: "valid",
+                valid: Some(true),
+                reason: None,
+                provider,
+            },
+            KeyCheck::Rejected(why) => Self {
+                status: "rejected",
+                valid: Some(false),
+                reason: Some(why),
+                provider,
+            },
+            // `valid` stays absent: the probe learned nothing about the key,
+            // and reporting `false` would read as "the provider rejected it".
+            KeyCheck::Unreachable(why) => Self {
+                status: "unreachable",
+                valid: None,
+                reason: Some(why),
+                provider,
+            },
+        }
     }
 }

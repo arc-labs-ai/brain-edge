@@ -1,13 +1,14 @@
 //! Schema handlers: get / upload / validate / replace.
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
 
 use crate::dto::schema::{
-    ListExtractorsResponseDto, ListSchemasQuery, ListSchemasResponseDto, SchemaDto, SchemaGetQuery,
-    SchemaReplaceBody, SchemaReplaceDto, SchemaUploadBody, SchemaUploadDto, SchemaValidateBody,
-    SchemaValidateDto, extractor_list_request,
+    ListExtractorsResponseDto, ListSchemasQuery, ListSchemasResponseDto, SchemaDropQuery,
+    SchemaDropResponseDto, SchemaDto, SchemaGetQuery, SchemaReplaceBody, SchemaReplaceDto,
+    SchemaUploadBody, SchemaUploadDto, SchemaValidateBody, SchemaValidateDto,
+    extractor_list_request,
 };
 use crate::error::ApiError;
 use crate::port::Outcome;
@@ -127,4 +128,29 @@ pub async fn extractors(
     state.record("extractor_list", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListExtractorsResponseDto::from(resp)))
+}
+
+/// `DELETE /v1/schema/{kind}/{name}` — drop one declared predicate or
+/// relation type (`SCHEMA_DROP`).
+///
+/// The per-type counterpart to `PUT /v1/schema`, which replaces the whole
+/// document. Existing rows on the dropped type survive as orphans — readable
+/// as plain memories, no longer enriched from the typed-graph tables — which
+/// is why `?force=true` is needed when any are live.
+pub async fn drop(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    Path((kind, name)): Path<(String, String)>,
+    Query(query): Query<SchemaDropQuery>,
+) -> Result<Json<SchemaDropResponseDto>, ApiError> {
+    let req = query
+        .to_request(&kind, &name)
+        .map_err(ApiError::bad_request)?;
+    let ident = state.resolve(&headers).await?;
+    let client = state.client_for(&ident.credential).await?;
+
+    let out = client.drop_schema(&req).await;
+    state.record("drop_schema", &ident, Outcome::of(&out));
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(SchemaDropResponseDto::from(resp)))
 }

@@ -197,6 +197,8 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("POST", "/v1/sessions", Some(r#"{"session_id":7}"#)),
     ("GET", "/v1/sessions", None),
     ("DELETE", "/v1/sessions/7", None),
+    // Surgical schema drop.
+    ("DELETE", "/v1/schema/predicate/works_at", None),
     // Query-plan introspection.
     (
         "POST",
@@ -310,6 +312,12 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ),
     ("GET", "/v1/llm-credential", None),
     ("DELETE", "/v1/llm-credential", None),
+    (
+        "POST",
+        "/v1/llm-credential/test",
+        Some(r#"{"provider":"openai","model":"gpt-4o-mini","api_key":"sk-not-a-real-key"}"#),
+    ),
+    ("POST", "/v1/llm-credential/verify", None),
 ];
 
 /// The broker routes, which do **not** authenticate through the resolver.
@@ -446,8 +454,8 @@ async fn the_route_table_covers_the_whole_surface() {
     // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
     // Both counts up front: clippy's `items_after_statements` (denied here) will
     // not have a `const` introduced partway down a function body.
-    const REGISTERED_PATHS: usize = 41;
-    const SERVED_COMBOS: usize = 57;
+    const REGISTERED_PATHS: usize = 44;
+    const SERVED_COMBOS: usize = 60;
 
     let router_src = include_str!("../src/app/mod.rs");
     let registrations = router_src.matches(".route(").count();
@@ -472,10 +480,14 @@ async fn a_keyless_edge_refuses_byok_before_authenticating() {
     // Pinning a real property of the design, not endorsing it — the same
     // treatment `validation_runs_before_authentication` gets.
     //
-    // All three credential handlers ask for the store before resolving the
+    // Every credential handler asks for the store before resolving the
     // caller, so an edge with no keyring answers 501 to anyone. The consequence
     // is that an unauthenticated caller can tell a BYOK-capable edge from one
     // without a KEK.
+    //
+    // `test` is held to the same line even though it stores nothing: an edge
+    // that cannot hold a key has no business probing providers on a caller's
+    // behalf, and answering there would imply a registration that will 501.
     //
     // Not an auth bypass, and not reachable where it would matter: with no
     // keyring there is no credential to disclose or modify, and on an edge that
@@ -483,14 +495,18 @@ async fn a_keyless_edge_refuses_byok_before_authenticating() {
     // `every_route_consults_the_resolver` proves, since the states it builds
     // install a keyring. Recorded here so reordering those two lines is a
     // visible change rather than a silent one.
+    /// How many trailing `ROUTES` entries are the credential verbs. They are
+    /// kept last so this slice can reach them; adding one means bumping this.
+    const CREDENTIAL_VERBS: usize = 5;
+
     let resolver = SpyResolver::rejecting();
     let meter = Arc::new(RecordingMeter::default());
 
-    for (method, path, body) in &ROUTES[ROUTES.len() - 3..] {
-        assert_eq!(
-            *path, "/v1/llm-credential",
-            "this test slices the last three ROUTES entries, which must be the \
-             credential verbs; the table was reordered"
+    for (method, path, body) in &ROUTES[ROUTES.len() - CREDENTIAL_VERBS..] {
+        assert!(
+            path.starts_with("/v1/llm-credential"),
+            "this test slices the last {CREDENTIAL_VERBS} ROUTES entries, which \
+             must be the credential verbs; the table was reordered (found {path})"
         );
         let state = EdgeState::with_ports(config(), resolver.clone(), meter.clone());
         let resp = send(state, method, path, *body).await;
