@@ -15,7 +15,11 @@
 #![allow(missing_docs)]
 
 use brain_db_sdk::wire::types::{
-    EvidenceRefWire, StatementCreateRequest, StatementCreateResponse, StatementGetRequest, StatementHistoryRequest, StatementHistoryResponseFrame, StatementKindWire, StatementListRequest, StatementObjectWire, StatementRetractRequest, StatementRetractResponse, StatementSupersedeRequest, StatementSupersedeResponse, StatementTombstoneRequest, StatementTombstoneResponse, StatementValueWire, StatementView,
+    EvidenceRefWire, StatementCreateRequest, StatementCreateResponse, StatementGetRequest,
+    StatementHistoryRequest, StatementHistoryResponseFrame, StatementKindWire,
+    StatementListRequest, StatementObjectWire, StatementRetractRequest, StatementRetractResponse,
+    StatementSupersedeRequest, StatementSupersedeResponse, StatementTombstoneRequest,
+    StatementTombstoneResponse, StatementValueWire, StatementView,
 };
 use serde::{Deserialize, Serialize};
 

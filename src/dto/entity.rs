@@ -5,7 +5,12 @@
 //! fields, 16-byte entity/relation ids as hyphenated UUID strings.
 
 use brain_db_sdk::wire::types::{
-    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse, EntityListItem, EntityListRequest, EntityMergeRequest, EntityMergeResponse, EntityRenameRequest, EntityResolveRequest, EntityResolveResponse, EntityTombstoneRequest, EntityTombstoneResponse, EntityUnmergeRequest, EntityUnmergeResponse, EntityUpdateRequest, EntityView, RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire, TraversalPathWire,
+    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse, EntityListItem,
+    EntityListRequest, EntityMergeRequest, EntityMergeResponse, EntityRenameRequest,
+    EntityResolveRequest, EntityResolveResponse, EntityTombstoneRequest, EntityTombstoneResponse,
+    EntityUnmergeRequest, EntityUnmergeResponse, EntityUpdateRequest, EntityView,
+    RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire,
+    TraversalPathWire,
 };
 use serde::{Deserialize, Serialize};
 

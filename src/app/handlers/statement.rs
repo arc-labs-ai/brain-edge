@@ -2,8 +2,8 @@
 //! create / supersede / tombstone / retract / history.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::http::HeaderMap;
+use axum::http::StatusCode;
 use axum::response::Json;
 
 use crate::dto::statement::{

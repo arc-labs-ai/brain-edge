@@ -206,7 +206,15 @@ fn data_router() -> Router<EdgeState> {
             get(handlers::statement::history),
         )
         // typed-graph relations
-        .route("/v1/relations/{id}", get(handlers::relation::get))
+        .route("/v1/relations", post(handlers::relation::create))
+        .route(
+            "/v1/relations/{id}",
+            get(handlers::relation::get).delete(handlers::relation::tombstone),
+        )
+        .route(
+            "/v1/relations/{id}/supersede",
+            post(handlers::relation::supersede),
+        )
         // schema. GET reads, POST merges, PUT replaces destructively — the
         // method carries the difference, which is the clearest signal
         // available that one of these three is not like the others.

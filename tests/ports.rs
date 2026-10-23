@@ -197,6 +197,26 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("POST", "/v1/sessions", Some(r#"{"session_id":7}"#)),
     ("GET", "/v1/sessions", None),
     ("DELETE", "/v1/sessions/7", None),
+    // Relation authoring.
+    (
+        "POST",
+        "/v1/relations",
+        Some(
+            r#"{"relation_type":"works_at","from_entity":"019faf38-50c7-7820-9048-980d79a1aa27","to_entity":"019faf38-50c7-7820-9048-980d79a1aa28"}"#,
+        ),
+    ),
+    (
+        "DELETE",
+        "/v1/relations/019faf38-50f1-7202-a06f-fc0f4a810aad",
+        None,
+    ),
+    (
+        "POST",
+        "/v1/relations/019faf38-50f1-7202-a06f-fc0f4a810aad/supersede",
+        Some(
+            r#"{"relation_type":"works_at","from_entity":"019faf38-50c7-7820-9048-980d79a1aa27","to_entity":"019faf38-50c7-7820-9048-980d79a1aa29"}"#,
+        ),
+    ),
     // Statement authoring.
     (
         "POST",
@@ -404,8 +424,8 @@ async fn the_route_table_covers_the_whole_surface() {
     // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
     // Both counts up front: clippy's `items_after_statements` (denied here) will
     // not have a `const` introduced partway down a function body.
-    const REGISTERED_PATHS: usize = 33;
-    const SERVED_COMBOS: usize = 48;
+    const REGISTERED_PATHS: usize = 35;
+    const SERVED_COMBOS: usize = 51;
 
     let router_src = include_str!("../src/app/mod.rs");
     let registrations = router_src.matches(".route(").count();

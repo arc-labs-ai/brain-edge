@@ -6,11 +6,13 @@
 //! canonical UUID strings.
 
 use brain_db_sdk::wire::types::{
-    RelationGetRequest, RelationListFromRequest, RelationListToRequest, RelationView,
+    EvidenceRefWire, RelationCreateRequest, RelationCreateResponse, RelationGetRequest,
+    RelationListFromRequest, RelationListToRequest, RelationSupersedeRequest,
+    RelationSupersedeResponse, RelationTombstoneRequest, RelationTombstoneResponse, RelationView,
 };
 use serde::{Deserialize, Serialize};
 
-use super::{parse_uuid, uuid_string};
+use super::{hex_decode, hex_encode, parse_memory_id, parse_uuid, uuid_string};
 
 /// Default page size for the list endpoint when the client omits `limit`.
 const DEFAULT_LIST_LIMIT: u32 = 100;
@@ -44,6 +46,30 @@ pub struct RelationDetailDto {
     pub valid_to_unix_nanos: u64,
     /// Whether the relation type is symmetric.
     pub is_symmetric: bool,
+    /// The opaque property blob, lowercase hex, or `null` when empty.
+    ///
+    /// Exposed because `POST /v1/relations` takes one and a supersede
+    /// replaces it: without a way to read the current value, revising a
+    /// relation's validity would silently drop its properties.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<String>,
+    /// Version within the supersession chain, 1-based.
+    pub version: u32,
+    /// The relation that replaced this one (UUID), or `null` if current.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// The relation this one replaced (UUID), or `null` if it is the first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    /// The first relation in the chain (UUID) — the stable identity of the
+    /// edge across every revision of it.
+    pub chain_root: String,
+    /// Which extractor produced it (`0` = written directly).
+    pub extractor_id: u32,
+    /// When it was extracted (unix nanos).
+    pub extracted_at_unix_nanos: u64,
+    /// When it was tombstoned (unix nanos; `0` = not tombstoned).
+    pub tombstoned_at_unix_nanos: u64,
     /// Whether the relation is tombstoned.
     pub tombstoned: bool,
 }
@@ -60,8 +86,21 @@ impl From<RelationView> for RelationDetailDto {
             valid_to_unix_nanos: v.valid_to_unix_nanos,
             is_symmetric: v.flags & RELATION_FLAG_SYMMETRIC != 0,
             tombstoned: v.tombstoned,
+            properties: (!v.properties_blob.is_empty()).then(|| hex_encode(&v.properties_blob)),
+            version: v.version,
+            superseded_by: optional_uuid(&v.superseded_by),
+            supersedes: optional_uuid(&v.supersedes),
+            chain_root: uuid_string(&v.chain_root),
+            extractor_id: v.extractor_id,
+            extracted_at_unix_nanos: v.extracted_at_unix_nanos,
+            tombstoned_at_unix_nanos: v.tombstoned_at_unix_nanos,
         }
     }
+}
+
+/// An all-zero 16-byte id means "unset" on the wire, not the nil UUID.
+fn optional_uuid(b: &[u8; 16]) -> Option<String> {
+    (b != &[0u8; 16]).then(|| uuid_string(b))
 }
 
 /// `GET /v1/relations/{id}` query parameters.
@@ -285,5 +324,192 @@ mod relation_tests {
         assert!(req.follow_supersession);
         assert_eq!(req.relation_id[15], 1);
         assert!(get_request_from("bad", &q).is_err());
+    }
+}
+
+// --- Authoring --------------------------------------------------------------
+//
+// Asserting an edge directly, revising it, and retiring it. Reads were already
+// here; without these the typed graph could only ever be what the extractor
+// inferred.
+
+/// `POST /v1/relations` body — assert a typed edge between two entities.
+#[derive(Debug, Deserialize)]
+pub struct CreateRelationBody {
+    /// The relation type, as declared in the schema.
+    pub relation_type: String,
+    /// The source entity (UUID).
+    pub from_entity: String,
+    /// The target entity (UUID).
+    pub to_entity: String,
+    /// Confidence in `[0,1]`. Defaults to certain.
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+    /// Bi-temporal validity start (unix nanos). `0` = now, server-side.
+    #[serde(default)]
+    pub valid_from_unix_nanos: u64,
+    /// Bi-temporal validity end (unix nanos). `0` = still valid.
+    #[serde(default)]
+    pub valid_to_unix_nanos: u64,
+    /// Which extractor to attribute it to. `0` = written directly.
+    #[serde(default)]
+    pub extractor_id: u32,
+    /// Session to attribute it to. `0` = the default session.
+    #[serde(default)]
+    pub session_id: u64,
+    /// Memory ids this edge rests on (128-bit decimal strings).
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    /// An opaque property blob, lowercase hex. A supersede REPLACES it, which
+    /// is why `GET /v1/relations/{id}` returns it.
+    #[serde(default)]
+    pub properties: Option<String>,
+}
+
+const fn default_confidence() -> f32 {
+    1.0
+}
+
+impl CreateRelationBody {
+    /// Build the wire request.
+    ///
+    /// # Errors
+    /// A blank relation type, an id that will not parse, a self-edge, a
+    /// confidence outside `[0,1]`, a backwards validity window, or a property
+    /// blob that is not hex.
+    pub fn to_request(&self) -> Result<RelationCreateRequest, String> {
+        let relation_type = self.relation_type.trim().to_owned();
+        if relation_type.is_empty() {
+            return Err("relation_type must not be blank".into());
+        }
+        let from_entity = parse_uuid(&self.from_entity)?;
+        let to_entity = parse_uuid(&self.to_entity)?;
+        if from_entity == to_entity {
+            return Err("from_entity and to_entity must differ".into());
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err("confidence must be between 0.0 and 1.0".into());
+        }
+        // `0` means "still valid", so only a real end before a real start is
+        // backwards.
+        if self.valid_to_unix_nanos != 0 && self.valid_to_unix_nanos < self.valid_from_unix_nanos {
+            return Err("valid_to_unix_nanos must not precede valid_from_unix_nanos".into());
+        }
+        let evidence = self
+            .evidence
+            .iter()
+            .map(|id| parse_memory_id(id).map(u128::to_be_bytes))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(RelationCreateRequest {
+            relation_type,
+            from_entity,
+            to_entity,
+            properties_blob: match self.properties.as_deref() {
+                Some(hex) => hex_decode(hex)?,
+                None => Vec::new(),
+            },
+            evidence: EvidenceRefWire::Inline(evidence),
+            extractor_id: self.extractor_id,
+            confidence: self.confidence,
+            valid_from_unix_nanos: self.valid_from_unix_nanos,
+            valid_to_unix_nanos: self.valid_to_unix_nanos,
+            session_id: self.session_id,
+            request_id: brain_db_sdk::new_id(),
+            act_as: None,
+        })
+    }
+}
+
+/// `POST /v1/relations/{id}/supersede` body — replace an edge with a revised
+/// one, keeping both and the link between them.
+#[derive(Debug, Deserialize)]
+pub struct SupersedeRelationBody {
+    /// The replacement edge.
+    #[serde(flatten)]
+    pub relation: CreateRelationBody,
+}
+
+impl SupersedeRelationBody {
+    /// Build the wire request replacing `old_id`.
+    ///
+    /// # Errors
+    /// The old id is not a UUID, or the replacement edge is invalid.
+    pub fn to_request(&self, old_id: &str) -> Result<RelationSupersedeRequest, String> {
+        Ok(RelationSupersedeRequest {
+            old_relation_id: parse_uuid(old_id)?,
+            new_relation: self.relation.to_request()?,
+            request_id: brain_db_sdk::new_id(),
+        })
+    }
+}
+
+/// `DELETE /v1/relations/{id}` query.
+#[derive(Debug, Default, Deserialize)]
+pub struct TombstoneRelationQuery {
+    /// Why it is being retired. Kept on the record.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl TombstoneRelationQuery {
+    /// Build the wire request for `id`.
+    ///
+    /// # Errors
+    /// The id is not a UUID.
+    pub fn to_request(&self, id: &str) -> Result<RelationTombstoneRequest, String> {
+        Ok(RelationTombstoneRequest {
+            relation_id: parse_uuid(id)?,
+            reason: self.reason.clone().unwrap_or_default(),
+            request_id: brain_db_sdk::new_id(),
+        })
+    }
+}
+
+/// `POST /v1/relations` response.
+#[derive(Debug, Serialize)]
+pub struct CreateRelationResponseDto {
+    /// The new edge's id (UUID).
+    pub relation_id: String,
+}
+
+impl From<RelationCreateResponse> for CreateRelationResponseDto {
+    fn from(r: RelationCreateResponse) -> Self {
+        Self {
+            relation_id: uuid_string(&r.relation_id),
+        }
+    }
+}
+
+/// `POST /v1/relations/{id}/supersede` response.
+#[derive(Debug, Serialize)]
+pub struct SupersedeRelationResponseDto {
+    /// The replacement's id (UUID).
+    pub new_relation_id: String,
+    /// The replacement's version within the chain.
+    pub version: u32,
+}
+
+impl From<RelationSupersedeResponse> for SupersedeRelationResponseDto {
+    fn from(r: RelationSupersedeResponse) -> Self {
+        Self {
+            new_relation_id: uuid_string(&r.new_relation_id),
+            version: r.version,
+        }
+    }
+}
+
+/// `DELETE /v1/relations/{id}` response.
+#[derive(Debug, Serialize)]
+pub struct TombstoneRelationResponseDto {
+    /// When the tombstone took effect (unix nanos).
+    pub tombstoned_at_unix_nanos: u64,
+}
+
+impl From<RelationTombstoneResponse> for TombstoneRelationResponseDto {
+    fn from(r: RelationTombstoneResponse) -> Self {
+        Self {
+            tombstoned_at_unix_nanos: r.tombstoned_at_unix_nanos,
+        }
     }
 }

@@ -16,8 +16,7 @@
 
 use brain_db_sdk::wire::types::{
     EdgeEventPayload, EventType, GraphEventPayload, MemoryKindWire, StageKind, StageOutcome,
-    StagePayload,
-    SubscribeRequest, SubscriptionEvent, SubscriptionFilter,
+    StagePayload, SubscribeRequest, SubscriptionEvent, SubscriptionFilter,
 };
 use serde::{Deserialize, Serialize};
 
