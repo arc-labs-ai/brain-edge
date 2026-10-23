@@ -183,8 +183,28 @@ fn data_router() -> Router<EdgeState> {
         )
         .route("/v1/entities/{id}/relations", get(handlers::relation::list))
         // typed-graph statements
-        .route("/v1/statements", get(handlers::statement::list))
-        .route("/v1/statements/{id}", get(handlers::statement::get))
+        .route(
+            "/v1/statements",
+            get(handlers::statement::list).post(handlers::statement::create),
+        )
+        .route(
+            "/v1/statements/{id}",
+            get(handlers::statement::get).delete(handlers::statement::tombstone),
+        )
+        .route(
+            "/v1/statements/{id}/supersede",
+            post(handlers::statement::supersede),
+        )
+        // A separate verb from DELETE: the two differ in whether the content
+        // survives, which is not a difference to hide in a query parameter.
+        .route(
+            "/v1/statements/{id}/retract",
+            post(handlers::statement::retract),
+        )
+        .route(
+            "/v1/statements/{id}/history",
+            get(handlers::statement::history),
+        )
         // typed-graph relations
         .route("/v1/relations/{id}", get(handlers::relation::get))
         // schema. GET reads, POST merges, PUT replaces destructively — the
