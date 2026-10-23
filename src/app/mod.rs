@@ -167,7 +167,16 @@ fn data_router() -> Router<EdgeState> {
             post(handlers::entity::create).get(handlers::entity::list),
         )
         .route("/v1/entities/resolve", post(handlers::entity::resolve))
-        .route("/v1/entities/{id}", get(handlers::entity::get))
+        .route(
+            "/v1/entities/{id}",
+            get(handlers::entity::get)
+                // PUT, not PATCH: ENTITY_UPDATE replaces wholesale.
+                .put(handlers::entity::update)
+                .delete(handlers::entity::tombstone),
+        )
+        .route("/v1/entities/{id}/rename", post(handlers::entity::rename))
+        .route("/v1/entities/{id}/merge", post(handlers::entity::merge))
+        .route("/v1/entities/{id}/unmerge", post(handlers::entity::unmerge))
         .route(
             "/v1/entities/{id}/traverse",
             post(handlers::entity::traverse),

@@ -197,6 +197,32 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("POST", "/v1/sessions", Some(r#"{"session_id":7}"#)),
     ("GET", "/v1/sessions", None),
     ("DELETE", "/v1/sessions/7", None),
+    // Entity authoring.
+    (
+        "PUT",
+        "/v1/entities/019faf38-50c7-7820-9048-980d79a1aa27",
+        Some(r#"{"canonical_name":"Ada Lovelace"}"#),
+    ),
+    (
+        "DELETE",
+        "/v1/entities/019faf38-50c7-7820-9048-980d79a1aa27",
+        None,
+    ),
+    (
+        "POST",
+        "/v1/entities/019faf38-50c7-7820-9048-980d79a1aa27/rename",
+        Some(r#"{"new_canonical_name":"Ada King"}"#),
+    ),
+    (
+        "POST",
+        "/v1/entities/019faf38-50c7-7820-9048-980d79a1aa27/merge",
+        Some(r#"{"merged":"019faf38-50c7-7820-9048-980d79a1aa28"}"#),
+    ),
+    (
+        "POST",
+        "/v1/entities/019faf38-50c7-7820-9048-980d79a1aa27/unmerge",
+        None,
+    ),
     // The change feed. SSE, so the response body never completes on its own;
     // the resolver guarantee this table asserts is about the request, which
     // is an ordinary one.
@@ -348,8 +374,8 @@ async fn the_route_table_covers_the_whole_surface() {
     // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
     // Both counts up front: clippy's `items_after_statements` (denied here) will
     // not have a `const` introduced partway down a function body.
-    const REGISTERED_PATHS: usize = 27;
-    const SERVED_COMBOS: usize = 38;
+    const REGISTERED_PATHS: usize = 30;
+    const SERVED_COMBOS: usize = 43;
 
     let router_src = include_str!("../src/app/mod.rs");
     let registrations = router_src.matches(".route(").count();

@@ -5,14 +5,11 @@
 //! fields, 16-byte entity/relation ids as hyphenated UUID strings.
 
 use brain_db_sdk::wire::types::{
-    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse, EntityListItem,
-    EntityListRequest, EntityResolveRequest, EntityResolveResponse, EntityView,
-    RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire,
-    TraversalPathWire,
+    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse, EntityListItem, EntityListRequest, EntityMergeRequest, EntityMergeResponse, EntityRenameRequest, EntityResolveRequest, EntityResolveResponse, EntityTombstoneRequest, EntityTombstoneResponse, EntityUnmergeRequest, EntityUnmergeResponse, EntityUpdateRequest, EntityView, RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire, TraversalPathWire,
 };
 use serde::{Deserialize, Serialize};
 
-use super::{parse_uuid, uuid_string};
+use super::{hex_decode, hex_encode, parse_uuid, uuid_string};
 
 /// Default page size for `GET /v1/entities` when the client omits `limit`.
 const DEFAULT_LIST_LIMIT: u32 = 100;
@@ -170,6 +167,15 @@ pub struct EntityDetailDto {
     pub canonical_name: String,
     /// Known aliases.
     pub aliases: Vec<String>,
+    /// The opaque attribute blob, lowercase hex, or `null` when empty.
+    ///
+    /// Exposed because `PUT /v1/entities/{id}` REPLACES it: without a way to
+    /// read the current value there is no way to write one back, and an
+    /// update that only meant to change a name would clear attributes the
+    /// caller never saw. The same hex form the cursor params use — the bytes
+    /// are opaque here, so there is nothing to gain by interpreting them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<String>,
     /// How many memories mention this entity.
     pub mention_count: u32,
     /// Creation time (unix nanos).
@@ -193,6 +199,7 @@ impl From<EntityView> for EntityDetailDto {
             entity_type_id: v.entity_type_id,
             canonical_name: v.canonical_name,
             aliases: v.aliases,
+            attributes: (!v.attributes_blob.is_empty()).then(|| hex_encode(&v.attributes_blob)),
             mention_count: v.mention_count,
             created_at_unix_nanos: v.created_at_unix_nanos,
             updated_at_unix_nanos: v.updated_at_unix_nanos,
@@ -628,5 +635,218 @@ mod entity_tests {
         assert_eq!(dto.total_paths, 2);
         assert!(dto.truncated);
         assert!(dto.paths[0].steps[0].from.contains('-'));
+    }
+}
+
+// --- Mutation ---------------------------------------------------------------
+//
+// The authoring half of the entity graph: revise, rename, merge, unmerge,
+// tombstone. Reads and create were already here; these are the ops that let a
+// caller curate what the extractor produced rather than only watch it.
+
+/// `PUT /v1/entities/{id}` body — replace an entity's name, aliases and
+/// attribute blob.
+///
+/// PUT, not PATCH, because `ENTITY_UPDATE` is a wholesale replace on the wire
+/// and pretending otherwise would be a lie the first omitted field exposed.
+/// An omitted `aliases` or `attributes` therefore CLEARS it; `GET
+/// /v1/entities/{id}` returns both so a read-modify-write round-trips.
+#[derive(Debug, Deserialize)]
+pub struct UpdateEntityBody {
+    /// The new canonical display name.
+    pub canonical_name: String,
+    /// The complete alias list. Omitted means none.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// The complete attribute blob, lowercase hex. Omitted means none.
+    #[serde(default)]
+    pub attributes: Option<String>,
+}
+
+impl UpdateEntityBody {
+    /// Build the wire request for entity `id`.
+    ///
+    /// # Errors
+    /// The id is not a UUID, the name is blank, or the attribute blob is not
+    /// valid hex.
+    pub fn to_request(&self, id: &str) -> Result<EntityUpdateRequest, String> {
+        let canonical_name = self.canonical_name.trim().to_owned();
+        if canonical_name.is_empty() {
+            return Err("canonical_name must not be blank".into());
+        }
+        Ok(EntityUpdateRequest {
+            entity_id: parse_uuid(id)?,
+            canonical_name,
+            aliases: self.aliases.clone(),
+            attributes_blob: match self.attributes.as_deref() {
+                Some(hex) => hex_decode(hex)?,
+                None => Vec::new(),
+            },
+            request_id: brain_db_sdk::new_id(),
+        })
+    }
+}
+
+/// `POST /v1/entities/{id}/rename` body.
+///
+/// Separate from the update above because a rename is the one revision with a
+/// question of its own: what happens to the name being replaced.
+#[derive(Debug, Deserialize)]
+pub struct RenameEntityBody {
+    /// The new canonical display name.
+    pub new_canonical_name: String,
+    /// Keep the old canonical name as an alias instead of dropping it.
+    /// Defaults to keeping it: a name an entity was known by is how a later
+    /// mention still resolves, and losing it silently breaks resolution.
+    #[serde(default = "default_move_to_alias")]
+    pub move_to_alias: bool,
+}
+
+const fn default_move_to_alias() -> bool {
+    true
+}
+
+impl RenameEntityBody {
+    /// Build the wire request for entity `id`.
+    ///
+    /// # Errors
+    /// The id is not a UUID, or the new name is blank.
+    pub fn to_request(&self, id: &str) -> Result<EntityRenameRequest, String> {
+        let new_canonical_name = self.new_canonical_name.trim().to_owned();
+        if new_canonical_name.is_empty() {
+            return Err("new_canonical_name must not be blank".into());
+        }
+        Ok(EntityRenameRequest {
+            entity_id: parse_uuid(id)?,
+            new_canonical_name,
+            move_to_alias: self.move_to_alias,
+            request_id: brain_db_sdk::new_id(),
+        })
+    }
+}
+
+/// `POST /v1/entities/{id}/merge` body. The path id is the SURVIVOR — the
+/// entity that remains — and `merged` is the one folded into it.
+#[derive(Debug, Deserialize)]
+pub struct MergeEntityBody {
+    /// The entity to fold into the survivor (UUID).
+    pub merged: String,
+    /// How sure the caller is that these are the same thing, `0.0..=1.0`.
+    #[serde(default = "default_merge_confidence")]
+    pub confidence: f32,
+    /// Why they were merged. Kept in the merge audit record.
+    #[serde(default)]
+    pub reason: String,
+}
+
+const fn default_merge_confidence() -> f32 {
+    1.0
+}
+
+impl MergeEntityBody {
+    /// Build the wire request, with `survivor` from the path.
+    ///
+    /// # Errors
+    /// Either id is not a UUID, they are the same entity, or the confidence
+    /// is outside `0.0..=1.0`.
+    pub fn to_request(&self, survivor: &str) -> Result<EntityMergeRequest, String> {
+        let survivor_id = parse_uuid(survivor)?;
+        let merged_id = parse_uuid(&self.merged)?;
+        if survivor_id == merged_id {
+            return Err("an entity cannot be merged into itself".into());
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err("confidence must be between 0.0 and 1.0".into());
+        }
+        Ok(EntityMergeRequest {
+            survivor: survivor_id,
+            merged: merged_id,
+            confidence: self.confidence,
+            reason: self.reason.clone(),
+            request_id: brain_db_sdk::new_id(),
+        })
+    }
+}
+
+/// Build the wire request to unmerge entity `id` back out of its survivor.
+///
+/// # Errors
+/// The id is not a UUID.
+pub fn unmerge_request(id: &str) -> Result<EntityUnmergeRequest, String> {
+    Ok(EntityUnmergeRequest {
+        merged_entity: parse_uuid(id)?,
+        request_id: brain_db_sdk::new_id(),
+    })
+}
+
+/// `DELETE /v1/entities/{id}` query — why it is being tombstoned.
+#[derive(Debug, Default, Deserialize)]
+pub struct TombstoneEntityQuery {
+    /// Kept in the tombstone record. A reason on a destructive op is worth
+    /// asking for even when it is optional.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Build the wire request to tombstone entity `id`.
+///
+/// # Errors
+/// The id is not a UUID.
+pub fn tombstone_request(
+    id: &str,
+    query: &TombstoneEntityQuery,
+) -> Result<EntityTombstoneRequest, String> {
+    Ok(EntityTombstoneRequest {
+        entity_id: parse_uuid(id)?,
+        reason: query.reason.clone().unwrap_or_default(),
+        request_id: brain_db_sdk::new_id(),
+    })
+}
+
+/// `POST /v1/entities/{id}/merge` response.
+#[derive(Debug, Serialize)]
+pub struct MergeEntityResponseDto {
+    /// The merge audit record's id (UUID) — what an unmerge is traced back to.
+    pub audit_id: String,
+    /// How long the merge stays reversible, in seconds.
+    pub grace_period_seconds: u64,
+}
+
+impl From<EntityMergeResponse> for MergeEntityResponseDto {
+    fn from(r: EntityMergeResponse) -> Self {
+        Self {
+            audit_id: uuid_string(&r.audit_id),
+            grace_period_seconds: r.grace_period_seconds,
+        }
+    }
+}
+
+/// `POST /v1/entities/{id}/unmerge` response.
+#[derive(Debug, Serialize)]
+pub struct UnmergeEntityResponseDto {
+    /// The entity that came back (UUID).
+    pub restored_entity_id: String,
+}
+
+impl From<EntityUnmergeResponse> for UnmergeEntityResponseDto {
+    fn from(r: EntityUnmergeResponse) -> Self {
+        Self {
+            restored_entity_id: uuid_string(&r.restored_entity_id),
+        }
+    }
+}
+
+/// `DELETE /v1/entities/{id}` response.
+#[derive(Debug, Serialize)]
+pub struct TombstoneEntityResponseDto {
+    /// When the tombstone took effect (unix nanos).
+    pub tombstoned_at_unix_nanos: u64,
+}
+
+impl From<EntityTombstoneResponse> for TombstoneEntityResponseDto {
+    fn from(r: EntityTombstoneResponse) -> Self {
+        Self {
+            tombstoned_at_unix_nanos: r.tombstoned_at_unix_nanos,
+        }
     }
 }
