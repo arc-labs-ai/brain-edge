@@ -62,24 +62,49 @@ def parse_routes(text: str) -> list[dict]:
 
 # --- handler signatures ----------------------------------------------------
 
-# `pub async fn name(... Json(body): Json<T> ...) -> Result<Json<R>, ApiError>`
-HANDLER = re.compile(
-    r"pub async fn (\w+)\s*\((?P<args>.*?)\)\s*->\s*Result<Json<(?P<resp>\w+)>", re.S
+# `pub async fn name(... Json(body): Json<T> ...) -> Result<Json<R>, ApiError>`,
+# and the same with a status code: `-> Result<(StatusCode, Json<R>), ApiError>`,
+# which is how a handler reports 201-vs-200 on an idempotent create.
+#
+# Matched against ONE function at a time rather than against the whole file.
+# The previous form was a single `re.S` pattern with a non-greedy `args`, which
+# meant a handler whose return type did not match (a `(StatusCode, Json<..>)`
+# tuple, or `Response` in llm_proxy) did not simply fail to match: the regex
+# ran past its own body and matched the NEXT handler's `-> Result<Json<..>>`,
+# silently recording that response type against the wrong function and dropping
+# the real one. `POST /v1/spaces` came out claiming it returned
+# `ListSpacesResponseDto`, and `GET /v1/spaces` vanished.
+#
+# Splitting first bounds every match to the function it started in, so a
+# signature this cannot read is reported as unparsed — which is what the
+# "a non-empty unparsed list is not trustworthy" rule in contract/SOURCE.txt
+# depends on being true.
+SIGNATURE = re.compile(
+    r"\s*\((?P<args>.*?)\)\s*->\s*Result<\s*\(?\s*(?:StatusCode\s*,\s*)?Json<(?P<resp>\w+)>",
+    re.S,
 )
+HANDLER_SPLIT = re.compile(r"pub async fn (\w+)")
 JSON_ARG = re.compile(r"Json\((?:\w+)\):\s*Json<(\w+)>")
 QUERY_ARG = re.compile(r"Query\((?:\w+)\):\s*Query<(\w+)>")
 
 
 def parse_handlers(text: str, module: str) -> dict[str, dict]:
     out: dict[str, dict] = {}
-    for m in HANDLER.finditer(text):
-        args = m.group("args")
+    marks = list(HANDLER_SPLIT.finditer(text))
+    for i, m in enumerate(marks):
+        # Everything up to the next `pub async fn`, so a match can never
+        # borrow the following function's return type.
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        sig = SIGNATURE.match(text, m.end(), end)
+        if sig is None:
+            continue
+        args = sig.group("args")
         body = JSON_ARG.search(args)
         query = QUERY_ARG.search(args)
         out[f"{module}::{m.group(1)}"] = {
             "request_body": body.group(1) if body else None,
             "query": query.group(1) if query else None,
-            "response": m.group("resp"),
+            "response": sig.group("resp"),
         }
     return out
 

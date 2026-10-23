@@ -188,6 +188,15 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
         "/v1/schema/validate",
         Some(r#"{"schema_document":"entity P {}"}"#),
     ),
+    // Space lifecycle. No path id: all three act on the caller's effective
+    // space, which Brain resolves from `act_as`.
+    ("POST", "/v1/spaces", Some("{}")),
+    ("GET", "/v1/spaces", None),
+    ("DELETE", "/v1/spaces", None),
+    // Session lifecycle. A session has an id, so create and delete name one.
+    ("POST", "/v1/sessions", Some(r#"{"session_id":7}"#)),
+    ("GET", "/v1/sessions", None),
+    ("DELETE", "/v1/sessions/7", None),
     // BYOK. These reach the resolver only once a keyring is installed: without
     // one, `store_of` answers 501 before authenticating, so the states built
     // below install one. That is the hosted shape, and the only shape where
@@ -335,8 +344,8 @@ async fn the_route_table_covers_the_whole_surface() {
     // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
     // Both counts up front: clippy's `items_after_statements` (denied here) will
     // not have a `const` introduced partway down a function body.
-    const REGISTERED_PATHS: usize = 23;
-    const SERVED_COMBOS: usize = 31;
+    const REGISTERED_PATHS: usize = 26;
+    const SERVED_COMBOS: usize = 37;
 
     let router_src = include_str!("../src/app/mod.rs");
     let registrations = router_src.matches(".route(").count();

@@ -4,7 +4,7 @@ pub mod handlers;
 
 use axum::Router;
 use axum::routing::get;
-use axum::routing::post;
+use axum::routing::{delete, post};
 
 use crate::state::EdgeState;
 
@@ -188,6 +188,22 @@ fn data_router() -> Router<EdgeState> {
                 .put(handlers::schema::replace),
         )
         .route("/v1/schema/validate", post(handlers::schema::validate))
+        // space lifecycle — SPACE_CREATE / SPACE_LIST / SPACE_DELETE
+        // (0x0070-0x0072). No path parameter: all three act on the caller's
+        // effective space, which Brain resolves from `act_as`.
+        .route(
+            "/v1/spaces",
+            post(handlers::space::create)
+                .get(handlers::space::list)
+                .delete(handlers::space::delete),
+        )
+        // session lifecycle — SESSION_CREATE / SESSION_LIST / SESSION_DELETE
+        // (0x0073-0x0075). A session has an id, so create and delete name one.
+        .route(
+            "/v1/sessions",
+            post(handlers::session::create).get(handlers::session::list),
+        )
+        .route("/v1/sessions/{id}", delete(handlers::session::delete))
 }
 
 #[cfg(test)]
