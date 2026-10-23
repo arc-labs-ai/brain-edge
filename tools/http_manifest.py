@@ -41,6 +41,34 @@ ROUTE_START = re.compile(r'\.route\(\s*"([^"]+)"\s*,')
 METHOD_CALL = re.compile(r"\b(get|post|put|delete|patch)\s*\(\s*handlers::(\w+)::(\w+)")
 
 
+# Which `fn *_router()` a `.route(` call sits in. The router split is the
+# authentication plane: `data_router` and the tenant half of
+# `credential_router` take a tenant credential, while the broker routes take
+# a deployment-wide token because BRAIN calls them, not a tenant.
+#
+# Recorded because a tenant SDK has no business implementing the broker
+# surface, and without this the contract checker reports those routes missing
+# from all three clients forever — an alarm that can never be silenced
+# correctly, which is the kind that gets ignored.
+ROUTER_FN = re.compile(r"^fn (\w+)\s*\(\s*\)\s*->\s*Router", re.M)
+
+
+def plane_of(text: str, pos: int) -> str:
+    """The plane a route registered at `pos` belongs to."""
+    fns = [(m.start(), m.group(1)) for m in ROUTER_FN.finditer(text)]
+    owner = ""
+    for start, name in fns:
+        if start < pos:
+            owner = name
+        else:
+            break
+    if owner != "credential_router":
+        return "data"
+    # Inside the credential router, the broker's provider paths are the half
+    # Brain calls; `/v1/llm-credential*` is the tenant's own.
+    return "credential"
+
+
 def parse_routes(text: str) -> list[dict]:
     out: list[dict] = []
     for m in ROUTE_START.finditer(text):
@@ -53,9 +81,19 @@ def parse_routes(text: str) -> list[dict]:
                 depth -= 1
             i += 1
         args = text[m.end() : i - 1]
+        path = m.group(1)
+        plane = plane_of(text, m.start())
+        # The broker's own paths, which Brain reaches with a deployment token.
+        if plane == "credential" and not path.startswith("/v1/"):
+            plane = "broker"
         for verb, module, handler in METHOD_CALL.findall(args):
             out.append(
-                {"method": verb.upper(), "path": m.group(1), "handler": f"{module}::{handler}"}
+                {
+                    "method": verb.upper(),
+                    "path": path,
+                    "handler": f"{module}::{handler}",
+                    "plane": plane,
+                }
             )
     return out
 
@@ -89,12 +127,32 @@ def parse_routes(text: str) -> list[dict]:
 # the DTO each frame carries, and naming it in the signature is what lets that
 # contract be read from here rather than inferred from the handler body. An
 # `impl Stream` return, or axum's `.keep_alive()` wrapper, would erase it.
+# Four return shapes, in one alternation so a handler is read once:
+#
+#   -> Result<Json<R>, ApiError>                     a plain JSON response
+#   -> Result<(StatusCode, Json<R>), ApiError>       201-vs-200 on an idempotent create
+#   -> Result<Sse<SseStream<R>>, ApiError>           a Server-Sent Events stream
+#   -> Result<Response, ApiError>                    an opaque byte passthrough
+#
+# `Json` may be written qualified (`axum::response::Json<R>`), which is how
+# `llm_proxy::resolve` writes it — that route was reported unparsed purely
+# because the path prefix was not allowed for, and it carries an ordinary
+# JSON DTO like any other.
+#
+# The `Response` arm is the broker's proxy to OpenAI and Anthropic. Those
+# bodies are those providers' shapes, not ours, so there is no DTO to record
+# — but "this route is a passthrough" is a fact about the contract, while
+# "the parser could not read this" is a defect. Recording it as the former
+# keeps `unparsed` meaningful: contract/SOURCE.txt makes a non-empty
+# unparsed list the signal that the manifest is not to be trusted, and three
+# permanent entries would have retired that signal by making it always true.
 SIGNATURE = re.compile(
     r"\s*\((?P<args>.*?)\)\s*->\s*Result<\s*"
     r"(?:"
-    r"\(\s*StatusCode\s*,\s*Json<(?P<resp_created>\w+)>\s*\)"
+    r"\(\s*StatusCode\s*,\s*(?:\w+::)*Json<(?:\w+::)*(?P<resp_created>\w+)>\s*\)"
     r"|Sse<\s*SseStream<\s*(?P<resp_sse>\w+)\s*>\s*>"
-    r"|Json<(?P<resp_json>\w+)>"
+    r"|(?:\w+::)*Json<(?:\w+::)*(?P<resp_json>\w+)>"
+    r"|(?P<passthrough>Response)\s*,"
     r")",
     re.S,
 )
@@ -122,6 +180,11 @@ def parse_handlers(text: str, module: str) -> dict[str, dict]:
             "query": query.group(1) if query else None,
             "response": sse or sig.group("resp_created") or sig.group("resp_json"),
         }
+        if sig.group("passthrough"):
+            # No DTO either way: the request body is whatever the provider
+            # takes and the response is whatever it returns.
+            entry["request_body"] = None
+            entry["streaming"] = "passthrough"
         if sse:
             # A streaming route is not a JSON route that happens to be slow:
             # the client needs a reader, `response` is the type of EACH frame
