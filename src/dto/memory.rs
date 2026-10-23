@@ -12,12 +12,14 @@ use brain_db_sdk::RecallAnswer;
 use brain_db_sdk::wire::types::{
     AnswerKindWire, EdgeDirectionWire, EncodeGraphEdge, EncodeGraphNode, EncodeResponse,
     EncodeStageArtifact, EncodeStageGraph, EncodeStageKeywordField, EncodeStageRecord,
-    ForgetResponse, MemoryEdgeWire, MemoryInspectResponse, MemoryListDirWire, MemoryListItem,
-    MemoryListRequest, MemoryListSortWire, MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
+    EncodeVectorDirectRequest, ForgetResponse, MaterializeProceduralRequest,
+    MaterializeProceduralResponse, MemoryEdgeWire, MemoryInspectResponse, MemoryKindWire,
+    MemoryListDirWire, MemoryListItem, MemoryListRequest, MemoryListSortWire,
+    MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
 };
 use serde::{Deserialize, Serialize};
 
-use super::{hex_decode, hex_encode, mem_id_decimal, parse_memory_id};
+use super::{hex_decode, hex_encode, mem_id_decimal, parse_memory_id, uuid_string};
 
 /// `POST /v1/memories` body.
 #[derive(Debug, Deserialize)]
@@ -806,5 +808,153 @@ mod memory_tests {
         assert_eq!(dto.edges[1].direction, "incoming");
         assert_eq!(dto.edges[1].peer, "7");
         assert!(dto.edges[1].annotation.is_none());
+    }
+}
+
+// --- Direct vector encode ---------------------------------------------------
+
+/// `POST /v1/memories/vector` body — store a memory with a caller-supplied
+/// embedding (`ENCODE_VECTOR_DIRECT`).
+///
+/// For callers that already embed with their own model and want Brain to skip
+/// its embedder. `model_fingerprint` identifies that model: vectors from
+/// different models are not comparable, so a recall that mixed them would
+/// return nonsense ranked confidently. It is required for that reason.
+#[derive(Debug, Deserialize)]
+pub struct EncodeVectorBody {
+    /// The text the vector was computed from. Stored as the memory's content.
+    pub text: String,
+    /// The embedding.
+    pub vector: Vec<f32>,
+    /// A 16-byte identifier for the model that produced it, lowercase hex
+    /// (32 characters).
+    pub model_fingerprint: String,
+    /// Optional session id.
+    #[serde(default)]
+    pub session: Option<u64>,
+    /// Memory kind byte (`0` = episodic, `1` = semantic, `2` = consolidated).
+    #[serde(default)]
+    pub kind: Option<u8>,
+    /// A salience hint in `[0,1]`; Brain decides the final value.
+    #[serde(default)]
+    pub salience_hint: Option<f32>,
+    /// Skip the write when an identical memory already exists.
+    #[serde(default)]
+    pub deduplicate: bool,
+}
+
+impl EncodeVectorBody {
+    /// Build the wire request.
+    ///
+    /// # Errors
+    /// Blank text, an empty vector, a fingerprint that is not 32 hex
+    /// characters, an unknown kind, or a salience hint outside `[0,1]`.
+    pub fn to_request(self) -> Result<EncodeVectorDirectRequest, String> {
+        let text = self.text.trim().to_owned();
+        if text.is_empty() {
+            return Err("text must not be blank".into());
+        }
+        if self.vector.is_empty() {
+            return Err("vector must not be empty".into());
+        }
+        let fp = hex_decode(&self.model_fingerprint)?;
+        let model_fingerprint: [u8; 16] = fp
+            .try_into()
+            .map_err(|_| "model_fingerprint must be 16 bytes (32 hex characters)".to_string())?;
+        if self
+            .salience_hint
+            .is_some_and(|s| !(0.0..=1.0).contains(&s))
+        {
+            return Err("salience_hint must be between 0.0 and 1.0".into());
+        }
+        let kind = match self.kind.unwrap_or(0) {
+            0 => MemoryKindWire::Episodic,
+            1 => MemoryKindWire::Semantic,
+            2 => MemoryKindWire::Consolidated,
+            other => return Err(format!("`{other}` is not a memory kind")),
+        };
+        Ok(EncodeVectorDirectRequest {
+            text,
+            vector: self.vector,
+            model_fingerprint,
+            session_id: self.session.unwrap_or(0),
+            kind,
+            salience_hint: self.salience_hint.unwrap_or(0.0),
+            edges: Vec::new(),
+            request_id: brain_db_sdk::new_id(),
+            txn_id: None,
+            deduplicate: self.deduplicate,
+        })
+    }
+}
+
+// --- Procedural materialisation ---------------------------------------------
+
+/// `POST /v1/procedural/materialize` body — render the caller's directives
+/// into a system prompt block (`MATERIALIZE_PROCEDURAL`).
+///
+/// This is the op that turns remembered preferences and directives into text
+/// an agent can put in front of a model, which is otherwise something every
+/// caller reimplements over `/v1/recall`.
+#[derive(Debug, Default, Deserialize)]
+pub struct MaterializeProceduralBody {
+    /// Only directives from these sessions.
+    #[serde(default)]
+    pub sessions: Vec<u64>,
+    /// How many to consider. `0` = the server default.
+    #[serde(default)]
+    pub top_k: u32,
+    /// Drop anything below this confidence.
+    #[serde(default)]
+    pub min_confidence: f32,
+    /// Only these directive categories.
+    #[serde(default)]
+    pub categories: Vec<String>,
+}
+
+impl MaterializeProceduralBody {
+    /// Build the wire request. The space is the caller's own, so `space_id`
+    /// is left zero for Brain to fill from `act_as`.
+    ///
+    /// # Errors
+    /// A confidence floor outside `[0,1]`.
+    pub fn to_request(self) -> Result<MaterializeProceduralRequest, String> {
+        if !(0.0..=1.0).contains(&self.min_confidence) {
+            return Err("min_confidence must be between 0.0 and 1.0".into());
+        }
+        Ok(MaterializeProceduralRequest {
+            space_id: [0u8; 16],
+            session_filter: (!self.sessions.is_empty()).then_some(self.sessions),
+            top_k: self.top_k,
+            min_confidence: self.min_confidence,
+            categories: self.categories,
+            request_id: brain_db_sdk::new_id(),
+        })
+    }
+}
+
+/// `POST /v1/procedural/materialize` response.
+#[derive(Debug, Serialize)]
+pub struct MaterializeProceduralResponseDto {
+    /// The rendered block, ready to put in a system prompt.
+    pub system_block: String,
+    /// The statements it was rendered from (UUIDs) — so a caller can show its
+    /// work, or follow one back to the memory it came from.
+    pub statement_ids: Vec<String>,
+    /// How many candidates were considered before trimming.
+    pub total_candidates: u32,
+    /// Whether the block was cut short by the token budget, meaning some
+    /// directives did not make it in.
+    pub trimmed_by_budget: bool,
+}
+
+impl From<MaterializeProceduralResponse> for MaterializeProceduralResponseDto {
+    fn from(r: MaterializeProceduralResponse) -> Self {
+        Self {
+            system_block: r.system_block,
+            statement_ids: r.statement_ids.iter().map(uuid_string).collect(),
+            total_candidates: r.total_candidates,
+            trimmed_by_budget: r.trimmed_by_budget,
+        }
     }
 }

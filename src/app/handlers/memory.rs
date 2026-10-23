@@ -7,7 +7,8 @@ use brain_db_sdk::wire::types::{MemoryInspectRequest, RecallScopeWire};
 use brain_db_sdk::{EncodeBuilder, ForgetBuilder, RecallBuilder};
 
 use crate::dto::memory::{
-    EncodeBody, EncodeResponseDto, ForgetBody, ForgetResponseDto, MemoryInspectDto,
+    EncodeBody, EncodeResponseDto, EncodeVectorBody, ForgetBody, ForgetResponseDto,
+    MaterializeProceduralBody, MaterializeProceduralResponseDto, MemoryInspectDto,
     MemoryListPageDto, MemoryListQuery, RecallBody, RecallResponseDto,
 };
 use crate::dto::parse_memory_id;
@@ -139,4 +140,44 @@ pub async fn forget(
     state.record("forget", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ForgetResponseDto::from(resp)))
+}
+
+/// `POST /v1/memories/vector` — store a memory with a caller-supplied
+/// embedding (`ENCODE_VECTOR_DIRECT`).
+///
+/// Returns the same shape as `POST /v1/memories`: the difference is where the
+/// vector came from, not what was stored.
+pub async fn encode_vector(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    Json(body): Json<EncodeVectorBody>,
+) -> Result<Json<EncodeResponseDto>, ApiError> {
+    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let ident = state.resolve(&headers).await?;
+    let client = state.client_for(&ident.credential).await?;
+
+    let out = client.encode_vector_direct(&req).await;
+    state.record("encode_vector_direct", &ident, Outcome::of(&out));
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(EncodeResponseDto::from(resp)))
+}
+
+/// `POST /v1/procedural/materialize` — render the caller's directives into a
+/// system-prompt block (`MATERIALIZE_PROCEDURAL`).
+pub async fn materialize_procedural(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    body: Option<Json<MaterializeProceduralBody>>,
+) -> Result<Json<MaterializeProceduralResponseDto>, ApiError> {
+    // Optional body: every field is a filter, and asking for `{}` to get the
+    // default rendering is friction for no gain.
+    let body = body.map_or_else(MaterializeProceduralBody::default, |Json(b)| b);
+    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let ident = state.resolve(&headers).await?;
+    let client = state.client_for(&ident.credential).await?;
+
+    let out = client.materialize_procedural(&req).await;
+    state.record("materialize_procedural", &ident, Outcome::of(&out));
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(MaterializeProceduralResponseDto::from(resp)))
 }

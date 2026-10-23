@@ -18,11 +18,14 @@
 #![allow(missing_docs)]
 
 use brain_db_sdk::wire::types::{
-    SchemaGetRequest, SchemaGetResponse, SchemaReplaceRequest, SchemaReplaceResponse,
+    ExtractorListRequest, ExtractorListResponseFrame, SchemaGetRequest, SchemaGetResponse,
+    SchemaListRequest, SchemaListResponseFrame, SchemaReplaceRequest, SchemaReplaceResponse,
     SchemaUploadRequest, SchemaUploadResponse, SchemaValidateRequest, SchemaValidateResponse,
     SchemaValidationErrorWire,
 };
 use serde::{Deserialize, Serialize};
+
+use super::{hex_decode, hex_encode};
 
 /// One structured parse-or-validate diagnostic.
 #[derive(Debug, Serialize)]
@@ -375,4 +378,158 @@ mod schema_tests {
         assert_eq!(dto.dropped_count, 12);
         assert_eq!(dto.validation_errors.len(), 1);
     }
+}
+
+// --- Introspection ----------------------------------------------------------
+//
+// What schema versions exist, and which extractors are registered. Both are
+// read-only: a caller tuning a schema needs to see the version history it is
+// adding to, and a caller reading extracted statements needs to know what
+// produced them.
+
+/// `GET /v1/schemas` query — the namespace's schema version history.
+#[derive(Debug, Default, Deserialize)]
+pub struct ListSchemasQuery {
+    /// Page size.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Opaque keyset cursor from the previous page, lowercase hex.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// Default page size for `GET /v1/schemas`.
+const DEFAULT_SCHEMA_PAGE: u32 = 100;
+/// Ceiling on that page size.
+const MAX_SCHEMA_PAGE: u32 = 1000;
+
+impl ListSchemasQuery {
+    /// Build the wire request. The namespace is the caller's own — `act_as`
+    /// pins it, and naming another would be a scope the credential does not
+    /// carry.
+    ///
+    /// # Errors
+    /// The cursor is not hex.
+    pub fn to_request(&self) -> Result<SchemaListRequest, String> {
+        Ok(SchemaListRequest {
+            namespace: String::new(),
+            limit: self
+                .limit
+                .filter(|n| *n > 0)
+                .map_or(DEFAULT_SCHEMA_PAGE, |n| n.min(MAX_SCHEMA_PAGE)),
+            cursor: match self.cursor.as_deref() {
+                Some(c) => hex_decode(c)?,
+                None => Vec::new(),
+            },
+            act_as: None,
+        })
+    }
+}
+
+/// One schema version.
+#[derive(Debug, Serialize)]
+pub struct SchemaVersionDto {
+    pub schema_version: u32,
+    pub uploaded_at_unix_nanos: u64,
+    /// Which validator accepted it — a document that passed an older
+    /// validator is not necessarily one the current validator would accept.
+    pub validator_version: u32,
+    /// Whether the original document text was retained and can be fetched.
+    pub has_source_text: bool,
+}
+
+/// `GET /v1/schemas` response.
+#[derive(Debug, Serialize)]
+pub struct ListSchemasResponseDto {
+    pub namespace: String,
+    pub items: Vec<SchemaVersionDto>,
+    /// How many versions exist in total, across every page.
+    pub total: u32,
+    /// Cursor for the next page, or `null` on the last one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+impl ListSchemasResponseDto {
+    /// Fold the streamed frames into one page.
+    #[must_use]
+    pub fn from_frames(frames: Vec<SchemaListResponseFrame>) -> Self {
+        let namespace = frames
+            .first()
+            .map(|f| f.namespace.clone())
+            .unwrap_or_default();
+        let total = frames.first().map_or(0, |f| f.total);
+        // The LAST frame's cursor: an earlier one would replay rows this page
+        // already returned.
+        let next_cursor = frames
+            .last()
+            .filter(|f| !f.next_cursor.is_empty())
+            .map(|f| hex_encode(&f.next_cursor));
+        Self {
+            namespace,
+            items: frames
+                .into_iter()
+                .flat_map(|f| f.items)
+                .map(|i| SchemaVersionDto {
+                    schema_version: i.schema_version,
+                    uploaded_at_unix_nanos: i.uploaded_at_unix_nanos,
+                    validator_version: i.validator_version,
+                    has_source_text: i.has_source_text,
+                })
+                .collect(),
+            total,
+            next_cursor,
+        }
+    }
+}
+
+/// One registered extractor.
+#[derive(Debug, Serialize)]
+pub struct ExtractorDto {
+    /// The id statements carry as `extractor_id`.
+    pub extractor_id: u32,
+    pub namespace: String,
+    pub name: String,
+    /// `0` = pattern, `1` = classifier, `2` = llm.
+    pub kind: u8,
+    pub schema_version: u32,
+    pub created_at_unix_nanos: u64,
+}
+
+/// `GET /v1/extractors` response.
+///
+/// Read-only: extraction is always-on and cannot be toggled, so there is
+/// nothing here to write.
+#[derive(Debug, Serialize)]
+pub struct ListExtractorsResponseDto {
+    pub items: Vec<ExtractorDto>,
+    pub total: u32,
+}
+
+impl From<ExtractorListResponseFrame> for ListExtractorsResponseDto {
+    fn from(f: ExtractorListResponseFrame) -> Self {
+        Self {
+            total: f.total,
+            items: f
+                .items
+                .into_iter()
+                .map(|i| ExtractorDto {
+                    extractor_id: i.extractor_id,
+                    namespace: i.namespace,
+                    name: i.name,
+                    kind: i.kind,
+                    schema_version: i.schema_version,
+                    created_at_unix_nanos: i.created_at_unix_nanos,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The wire request listing the shard's extractors. It takes no arguments —
+/// every registered extractor comes back — and is a struct rather than a unit
+/// type only so the CBOR encoding matches every other request body.
+#[must_use]
+pub fn extractor_list_request() -> ExtractorListRequest {
+    ExtractorListRequest {}
 }

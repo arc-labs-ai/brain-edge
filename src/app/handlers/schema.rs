@@ -5,8 +5,9 @@ use axum::http::HeaderMap;
 use axum::response::Json;
 
 use crate::dto::schema::{
-    SchemaDto, SchemaGetQuery, SchemaReplaceBody, SchemaReplaceDto, SchemaUploadBody,
-    SchemaUploadDto, SchemaValidateBody, SchemaValidateDto,
+    ListExtractorsResponseDto, ListSchemasQuery, ListSchemasResponseDto, SchemaDto, SchemaGetQuery,
+    SchemaReplaceBody, SchemaReplaceDto, SchemaUploadBody, SchemaUploadDto, SchemaValidateBody,
+    SchemaValidateDto, extractor_list_request,
 };
 use crate::error::ApiError;
 use crate::port::Outcome;
@@ -87,4 +88,43 @@ pub async fn replace(
     state.record("replace_schema", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaReplaceDto::from(resp)))
+}
+
+/// `GET /v1/schemas` — the namespace's schema version history
+/// (`SCHEMA_LIST`).
+///
+/// Distinct from `GET /v1/schema`, which returns one document. A caller about
+/// to upload needs to see what it is adding to.
+pub async fn list(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    Query(query): Query<ListSchemasQuery>,
+) -> Result<Json<ListSchemasResponseDto>, ApiError> {
+    let req = query.to_request().map_err(ApiError::bad_request)?;
+    let ident = state.resolve(&headers).await?;
+    let client = state.client_for(&ident.credential).await?;
+
+    let out = client.list_schemas_frames(&req).await;
+    state.record("list_schemas", &ident, Outcome::of(&out));
+    let frames = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(ListSchemasResponseDto::from_frames(frames)))
+}
+
+/// `GET /v1/extractors` — the extractors registered on the shard
+/// (`EXTRACTOR_LIST`).
+///
+/// Read-only: extraction is always-on and cannot be toggled. It is here so a
+/// caller reading `extractor_id` on a statement can find out what produced it.
+pub async fn extractors(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+) -> Result<Json<ListExtractorsResponseDto>, ApiError> {
+    let req = extractor_list_request();
+    let ident = state.resolve(&headers).await?;
+    let client = state.client_for(&ident.credential).await?;
+
+    let out = client.extractor_list(&req).await;
+    state.record("extractor_list", &ident, Outcome::of(&out));
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(ListExtractorsResponseDto::from(resp)))
 }

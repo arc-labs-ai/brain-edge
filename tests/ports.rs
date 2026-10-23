@@ -197,6 +197,17 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("POST", "/v1/sessions", Some(r#"{"session_id":7}"#)),
     ("GET", "/v1/sessions", None),
     ("DELETE", "/v1/sessions/7", None),
+    // Introspection and the memory extras.
+    ("GET", "/v1/schemas", None),
+    ("GET", "/v1/extractors", None),
+    (
+        "POST",
+        "/v1/memories/vector",
+        Some(
+            r#"{"text":"x","vector":[0.1,0.2],"model_fingerprint":"000102030405060708090a0b0c0d0e0f"}"#,
+        ),
+    ),
+    ("POST", "/v1/procedural/materialize", Some("{}")),
     // Relation authoring.
     (
         "POST",
@@ -424,8 +435,8 @@ async fn the_route_table_covers_the_whole_surface() {
     // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
     // Both counts up front: clippy's `items_after_statements` (denied here) will
     // not have a `const` introduced partway down a function body.
-    const REGISTERED_PATHS: usize = 35;
-    const SERVED_COMBOS: usize = 51;
+    const REGISTERED_PATHS: usize = 39;
+    const SERVED_COMBOS: usize = 55;
 
     let router_src = include_str!("../src/app/mod.rs");
     let registrations = router_src.matches(".route(").count();

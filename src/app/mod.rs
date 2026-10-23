@@ -225,6 +225,18 @@ fn data_router() -> Router<EdgeState> {
                 .put(handlers::schema::replace),
         )
         .route("/v1/schema/validate", post(handlers::schema::validate))
+        // Schema version history — distinct from `/v1/schema`, which is one
+        // document.
+        .route("/v1/schemas", get(handlers::schema::list))
+        // Read-only: extraction is always-on and cannot be toggled.
+        .route("/v1/extractors", get(handlers::schema::extractors))
+        // A memory whose embedding the caller computed.
+        .route("/v1/memories/vector", post(handlers::memory::encode_vector))
+        // Directives rendered into a system-prompt block.
+        .route(
+            "/v1/procedural/materialize",
+            post(handlers::memory::materialize_procedural),
+        )
         // space lifecycle — SPACE_CREATE / SPACE_LIST / SPACE_DELETE
         // (0x0070-0x0072). No path parameter: all three act on the caller's
         // effective space, which Brain resolves from `act_as`.
