@@ -227,6 +227,11 @@ fn data_router() -> Router<EdgeState> {
         .route("/v1/schema/validate", post(handlers::schema::validate))
         // Schema version history — distinct from `/v1/schema`, which is one
         // document.
+        // Query-plan introspection. Explain plans without running; trace
+        // runs and measures — two verbs because the difference is whether
+        // work is done.
+        .route("/v1/query/explain", post(handlers::query::explain))
+        .route("/v1/query/trace", post(handlers::query::trace))
         .route("/v1/schemas", get(handlers::schema::list))
         // Read-only: extraction is always-on and cannot be toggled.
         .route("/v1/extractors", get(handlers::schema::extractors))

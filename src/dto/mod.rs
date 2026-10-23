@@ -10,6 +10,7 @@ pub mod graph;
 pub mod identity;
 pub mod llm_credential;
 pub mod memory;
+pub mod query;
 pub mod reasoning;
 pub mod relation;
 pub mod schema;
