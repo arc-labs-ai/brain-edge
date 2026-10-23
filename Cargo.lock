@@ -133,6 +133,7 @@ dependencies = [
  "async-trait",
  "axum",
  "brain-db-sdk",
+ "futures-core",
  "reqwest",
  "ring",
  "serde",

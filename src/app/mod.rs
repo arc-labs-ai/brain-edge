@@ -204,6 +204,9 @@ fn data_router() -> Router<EdgeState> {
             post(handlers::session::create).get(handlers::session::list),
         )
         .route("/v1/sessions/{id}", delete(handlers::session::delete))
+        // The change feed — SUBSCRIBE (0x0030) as Server-Sent Events.
+        // Unsubscribe is the client closing the stream; see the handler.
+        .route("/v1/subscribe", get(handlers::subscribe::subscribe))
 }
 
 #[cfg(test)]

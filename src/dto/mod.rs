@@ -16,6 +16,7 @@ pub mod schema;
 pub mod session;
 pub mod space;
 pub mod statement;
+pub mod subscribe;
 
 use brain_db_sdk::wire::types::WireMemoryId;
 

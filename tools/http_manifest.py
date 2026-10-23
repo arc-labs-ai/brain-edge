@@ -79,8 +79,23 @@ def parse_routes(text: str) -> list[dict]:
 # signature this cannot read is reported as unparsed — which is what the
 # "a non-empty unparsed list is not trustworthy" rule in contract/SOURCE.txt
 # depends on being true.
+# Three return shapes, in one alternation so a handler is read once:
+#
+#   -> Result<Json<R>, ApiError>                     a plain JSON response
+#   -> Result<(StatusCode, Json<R>), ApiError>       201-vs-200 on an idempotent create
+#   -> Result<Sse<SseStream<R>>, ApiError>           a Server-Sent Events stream
+#
+# The SSE arm is why `SseStream` is generic in its item: a stream's contract is
+# the DTO each frame carries, and naming it in the signature is what lets that
+# contract be read from here rather than inferred from the handler body. An
+# `impl Stream` return, or axum's `.keep_alive()` wrapper, would erase it.
 SIGNATURE = re.compile(
-    r"\s*\((?P<args>.*?)\)\s*->\s*Result<\s*\(?\s*(?:StatusCode\s*,\s*)?Json<(?P<resp>\w+)>",
+    r"\s*\((?P<args>.*?)\)\s*->\s*Result<\s*"
+    r"(?:"
+    r"\(\s*StatusCode\s*,\s*Json<(?P<resp_created>\w+)>\s*\)"
+    r"|Sse<\s*SseStream<\s*(?P<resp_sse>\w+)\s*>\s*>"
+    r"|Json<(?P<resp_json>\w+)>"
+    r")",
     re.S,
 )
 HANDLER_SPLIT = re.compile(r"pub async fn (\w+)")
@@ -101,11 +116,19 @@ def parse_handlers(text: str, module: str) -> dict[str, dict]:
         args = sig.group("args")
         body = JSON_ARG.search(args)
         query = QUERY_ARG.search(args)
-        out[f"{module}::{m.group(1)}"] = {
+        sse = sig.group("resp_sse")
+        entry = {
             "request_body": body.group(1) if body else None,
             "query": query.group(1) if query else None,
-            "response": sig.group("resp"),
+            "response": sse or sig.group("resp_created") or sig.group("resp_json"),
         }
+        if sse:
+            # A streaming route is not a JSON route that happens to be slow:
+            # the client needs a reader, `response` is the type of EACH frame
+            # rather than of the body, and the body never ends on its own. The
+            # SDK checkers have to be able to tell the two apart.
+            entry["streaming"] = "sse"
+        out[f"{module}::{m.group(1)}"] = entry
     return out
 
 
@@ -207,7 +230,14 @@ def parse_enums(text: str) -> tuple[dict, list]:
             if not line or line.startswith("#["):
                 continue
             buf = (buf + " " + line).strip() if buf else line
-            depth2 += buf.count("(") - buf.count(")") + buf.count("{") - buf.count("}")
+            # Count THIS line's brackets, not the whole accumulated buffer.
+            # Counting `buf` re-counted every earlier line on each pass, so
+            # `depth2` only ever climbed: a struct variant written across
+            # several lines — which is how rustfmt writes any variant with
+            # more than a field or two — never balanced back to 0 and was
+            # dropped without a word. `GraphEventDto`'s 13 variants all
+            # vanished that way, leaving `variants: []` in the manifest.
+            depth2 += line.count("(") - line.count(")") + line.count("{") - line.count("}")
             if depth2 > 0:
                 continue
             item = buf.rstrip(",").strip()
@@ -237,6 +267,11 @@ def parse_enums(text: str) -> tuple[dict, list]:
                 variants.append({"name": item})
             else:
                 unparsed.append(f"enum {name}: {item}")
+        # A variant still being accumulated when the body ran out means the
+        # bracket tracking lost its place. Say so: silently returning a short
+        # variant list is what made the bug above invisible.
+        if buf.strip():
+            unparsed.append(f"enum {name}: unterminated variant `{buf.strip()[:60]}`")
         out[name] = {"variants": variants, "serde": container}
     return out, unparsed
 
