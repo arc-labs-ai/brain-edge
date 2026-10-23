@@ -513,3 +513,153 @@ impl From<RelationTombstoneResponse> for TombstoneRelationResponseDto {
         }
     }
 }
+
+#[cfg(test)]
+mod relation_authoring_tests {
+    use super::*;
+
+    const FROM: &str = "019faf38-50c7-7820-9048-980d79a1aa27";
+    const TO: &str = "019faf38-50c7-7820-9048-980d79a1aa28";
+    const RID: &str = "019faf38-50f1-7202-a06f-fc0f4a810aad";
+
+    fn body() -> CreateRelationBody {
+        CreateRelationBody {
+            relation_type: "works_at".into(),
+            from_entity: FROM.into(),
+            to_entity: TO.into(),
+            confidence: 1.0,
+            valid_from_unix_nanos: 0,
+            valid_to_unix_nanos: 0,
+            extractor_id: 0,
+            session_id: 0,
+            evidence: Vec::new(),
+            properties: None,
+        }
+    }
+
+    #[test]
+    fn create_maps_endpoints_evidence_and_properties() {
+        let req = CreateRelationBody {
+            properties: Some("0a0b".into()),
+            evidence: vec!["11".into()],
+            ..body()
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(req.from_entity[15], 0x27);
+        assert_eq!(req.to_entity[15], 0x28);
+        assert_eq!(req.properties_blob, vec![0x0a, 0x0b]);
+        let EvidenceRefWire::Inline(ids) = req.evidence else {
+            panic!("inline evidence");
+        };
+        assert_eq!(u128::from_be_bytes(ids[0]), 11);
+        assert!(req.act_as.is_none());
+    }
+
+    #[test]
+    fn create_refuses_a_self_edge() {
+        let err = CreateRelationBody {
+            to_entity: FROM.into(),
+            ..body()
+        }
+        .to_request()
+        .unwrap_err();
+        assert!(err.contains("must differ"));
+    }
+
+    #[test]
+    fn create_rejects_blank_type_bad_confidence_and_backwards_windows() {
+        assert!(
+            CreateRelationBody {
+                relation_type: "  ".into(),
+                ..body()
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            CreateRelationBody {
+                confidence: -0.5,
+                ..body()
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            CreateRelationBody {
+                valid_from_unix_nanos: 9,
+                valid_to_unix_nanos: 1,
+                ..body()
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            CreateRelationBody {
+                properties: Some("zz".into()),
+                ..body()
+            }
+            .to_request()
+            .is_err(),
+            "properties that are not hex"
+        );
+    }
+
+    #[test]
+    fn the_read_exposes_the_properties_a_supersede_replaces() {
+        let view = RelationView {
+            relation_id: [1u8; 16],
+            chain_root: [9u8; 16],
+            relation_type: "works_at".into(),
+            from_entity: [2u8; 16],
+            to_entity: [3u8; 16],
+            properties_blob: vec![0xbe, 0xef],
+            evidence: EvidenceRefWire::Inline(vec![]),
+            extractor_id: 4,
+            extracted_at_unix_nanos: 5,
+            confidence: 1.0,
+            valid_from_unix_nanos: 0,
+            valid_to_unix_nanos: 0,
+            version: 2,
+            superseded_by: [0u8; 16],
+            supersedes: [7u8; 16],
+            tombstoned: false,
+            tombstoned_at_unix_nanos: 0,
+            flags: 0,
+        };
+        let dto = RelationDetailDto::from(view);
+        // Without this, revising an edge's validity would silently drop its
+        // properties, since a supersede replaces the whole edge.
+        assert_eq!(dto.properties.as_deref(), Some("beef"));
+        assert_eq!(dto.version, 2);
+        assert!(dto.superseded_by.is_none(), "unset reads as absent");
+        assert!(dto.supersedes.is_some());
+        assert_eq!(dto.extractor_id, 4);
+    }
+
+    #[test]
+    fn supersede_nests_the_replacement_under_the_old_id() {
+        let req = SupersedeRelationBody { relation: body() }
+            .to_request(RID)
+            .unwrap();
+        assert_eq!(req.old_relation_id[15], 0xad);
+        assert_eq!(req.new_relation.relation_type, "works_at");
+    }
+
+    #[test]
+    fn tombstone_carries_an_optional_reason() {
+        let bare = TombstoneRelationQuery::default().to_request(RID).unwrap();
+        assert_eq!(bare.reason, "");
+        let given = TombstoneRelationQuery {
+            reason: Some("superseded by hand".into()),
+        }
+        .to_request(RID)
+        .unwrap();
+        assert_eq!(given.reason, "superseded by hand");
+        assert!(
+            TombstoneRelationQuery::default()
+                .to_request("nope")
+                .is_err()
+        );
+    }
+}

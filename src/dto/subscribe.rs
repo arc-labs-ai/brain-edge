@@ -457,3 +457,188 @@ pub struct SubscriptionClosedDto {
     /// `error`.
     pub reason: &'static str,
 }
+
+#[cfg(test)]
+mod subscribe_tests {
+    use super::*;
+    use brain_db_sdk::wire::types::{EntityCreatedEvent, StageHypePayload};
+
+    fn query() -> SubscribeQuery {
+        SubscribeQuery::default()
+    }
+
+    #[test]
+    fn filters_parse_as_comma_separated_lists() {
+        let q = SubscribeQuery {
+            sessions: Some("1, 2 ,3".into()),
+            kinds: Some("semantic,2".into()),
+            memories: Some("7".into()),
+            ..query()
+        };
+        let req = q.to_request(None).unwrap();
+        assert_eq!(req.filter.session_filter.unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            req.filter.kinds.unwrap(),
+            vec![MemoryKindWire::Semantic, MemoryKindWire::Consolidated],
+            "a kind is accepted by name or by byte"
+        );
+        assert_eq!(req.filter.memory_ids.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_empty_filter_list_is_no_filter_rather_than_an_empty_one() {
+        // `?sessions=` must not mean "no sessions match", which would produce
+        // a feed that is silently always empty.
+        let req = SubscribeQuery {
+            sessions: Some(",, ".into()),
+            ..query()
+        }
+        .to_request(None)
+        .unwrap();
+        assert!(req.filter.session_filter.is_none());
+    }
+
+    #[test]
+    fn spaces_are_never_taken_from_the_query() {
+        let req = query().to_request(None).unwrap();
+        assert!(
+            req.filter.spaces.is_none(),
+            "the space comes from act_as; letting a query name others would \
+             be a scope the credential does not carry"
+        );
+    }
+
+    #[test]
+    fn last_event_id_wins_over_the_from_lsn_still_in_the_url() {
+        let q = SubscribeQuery {
+            from_lsn: Some(10),
+            ..query()
+        };
+        // A browser resends `Last-Event-ID` on an automatic reconnect while
+        // the original `?from_lsn=` is still in the URL; honouring the URL
+        // would rewind the feed to where it started.
+        assert_eq!(q.to_request(Some(99)).unwrap().from_lsn, Some(99));
+
+        let q = SubscribeQuery {
+            from_lsn: Some(10),
+            ..query()
+        };
+        assert_eq!(q.to_request(None).unwrap().from_lsn, Some(10));
+    }
+
+    #[test]
+    fn inflight_defaults_and_clamps() {
+        assert_eq!(
+            query().to_request(None).unwrap().max_inflight,
+            DEFAULT_MAX_INFLIGHT
+        );
+        assert_eq!(
+            SubscribeQuery {
+                max_inflight: Some(1_000_000),
+                ..query()
+            }
+            .to_request(None)
+            .unwrap()
+            .max_inflight,
+            MAX_MAX_INFLIGHT
+        );
+    }
+
+    #[test]
+    fn an_unknown_kind_is_rejected_rather_than_ignored() {
+        assert!(
+            SubscribeQuery {
+                kinds: Some("telepathic".into()),
+                ..query()
+            }
+            .to_request(None)
+            .is_err(),
+            "silently dropping it would give a feed that quietly filters \
+             nothing the caller asked for"
+        );
+    }
+
+    fn event(t: EventType) -> SubscriptionEvent {
+        SubscriptionEvent {
+            event_type: t,
+            memory_id: 5,
+            session_id: 1,
+            text: "hello".into(),
+            kind: MemoryKindWire::Semantic,
+            salience: 0.5,
+            timestamp_unix_nanos: 7,
+            lsn: 42,
+            graph_payload: None,
+            edge_payload: None,
+            stage_kind: None,
+            stage_outcome: None,
+            stage_payload: None,
+        }
+    }
+
+    #[test]
+    fn a_memory_id_on_the_feed_is_decimal_like_everywhere_else() {
+        let dto = SubscriptionEventDto::from(event(EventType::Encoded));
+        assert_eq!(dto.memory_id, "5");
+        assert_eq!(dto.event_type, "encoded");
+        assert_eq!(dto.lsn, 42);
+    }
+
+    #[test]
+    fn graph_events_are_typed_not_opaque() {
+        let mut e = event(EventType::EntityCreated);
+        e.graph_payload = Some(GraphEventPayload::EntityCreated(EntityCreatedEvent {
+            entity_id: [3u8; 16],
+            entity_type_id: 1,
+            canonical_name: "Ada".into(),
+        }));
+        let json = serde_json::to_value(SubscriptionEventDto::from(e)).unwrap();
+        // Tagged by `type`, with the variant's own fields beside it — a
+        // subscriber acts on these ids, so they are mapped rather than
+        // handed over as an untyped blob.
+        assert_eq!(json["graph"]["type"], "entity_created");
+        assert_eq!(json["graph"]["canonical_name"], "Ada");
+        assert!(json["graph"]["entity_id"].as_str().unwrap().contains('-'));
+    }
+
+    #[test]
+    fn stage_events_carry_their_outcome_and_payload() {
+        let mut e = event(EventType::StageCompleted);
+        e.stage_kind = Some(StageKind::Hype);
+        e.stage_outcome = Some(StageOutcome::Failed);
+        e.stage_payload = Some(StagePayload::Hype(StageHypePayload {
+            questions_written: 0,
+            cost_micro_usd: 12,
+        }));
+        let json = serde_json::to_value(SubscriptionEventDto::from(e)).unwrap();
+        assert_eq!(json["stage_kind"], "hype");
+        assert_eq!(json["stage_outcome"], "failed");
+        assert_eq!(json["stage"]["type"], "hype");
+        assert_eq!(json["stage"]["cost_micro_usd"], 12);
+    }
+
+    #[test]
+    fn absent_payloads_are_omitted_not_nulled() {
+        let json =
+            serde_json::to_value(SubscriptionEventDto::from(event(EventType::Encoded))).unwrap();
+        for key in ["graph", "edge", "stage", "stage_kind", "stage_outcome"] {
+            assert!(
+                json.get(key).is_none(),
+                "`{key}` should be absent on an event that has none"
+            );
+        }
+    }
+
+    #[test]
+    fn the_terminal_event_hands_back_where_the_feed_stopped() {
+        let json = serde_json::to_value(SubscriptionClosedDto {
+            final_lsn: 99,
+            reason: "unsubscribed",
+        })
+        .unwrap();
+        // This is what makes the next connection resume exactly rather than
+        // guess, since unsubscribe is a client disconnect.
+        assert_eq!(json["final_lsn"], 99);
+        assert_eq!(json["reason"], "unsubscribed");
+    }
+}

@@ -619,3 +619,157 @@ impl From<SchemaDropResponse> for SchemaDropResponseDto {
         }
     }
 }
+
+#[cfg(test)]
+mod schema_introspection_tests {
+    use super::*;
+
+    fn frame(cursor: Vec<u8>, versions: &[u32]) -> SchemaListResponseFrame {
+        SchemaListResponseFrame {
+            namespace: "mirror".into(),
+            items: versions
+                .iter()
+                .map(|v| brain_db_sdk::wire::types::SchemaListItemWire {
+                    schema_version: *v,
+                    uploaded_at_unix_nanos: 1,
+                    validator_version: 2,
+                    has_source_text: true,
+                })
+                .collect(),
+            total: 5,
+            next_cursor: cursor,
+            is_final: false,
+        }
+    }
+
+    #[test]
+    fn list_defaults_clamps_and_decodes_the_cursor() {
+        let q = ListSchemasQuery::default().to_request().unwrap();
+        assert_eq!(q.limit, DEFAULT_SCHEMA_PAGE);
+        assert_eq!(q.cursor, Vec::<u8>::new());
+        assert!(
+            q.namespace.is_empty(),
+            "the namespace comes from act_as, never the query"
+        );
+
+        let q = ListSchemasQuery {
+            limit: Some(99_999),
+            cursor: Some("0a0b".into()),
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(q.limit, MAX_SCHEMA_PAGE);
+        assert_eq!(q.cursor, vec![0x0a, 0x0b]);
+
+        assert!(
+            ListSchemasQuery {
+                limit: None,
+                cursor: Some("nothex".into()),
+            }
+            .to_request()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn list_folds_frames_and_takes_the_last_cursor() {
+        let page = ListSchemasResponseDto::from_frames(vec![
+            frame(vec![0x01], &[1, 2]),
+            frame(vec![0x02], &[3]),
+        ]);
+        assert_eq!(page.namespace, "mirror");
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.total, 5);
+        assert_eq!(page.next_cursor.as_deref(), Some("02"));
+        assert!(page.items[0].has_source_text);
+    }
+
+    #[test]
+    fn an_empty_listing_has_no_cursor() {
+        let page = ListSchemasResponseDto::from_frames(vec![]);
+        assert!(page.next_cursor.is_none());
+        assert!(page.items.is_empty());
+    }
+
+    #[test]
+    fn extractor_list_takes_no_filters() {
+        // The wire request is an empty map; it is a struct only so the
+        // encoding matches every other request body.
+        let _ = extractor_list_request();
+        let dto = ListExtractorsResponseDto::from(ExtractorListResponseFrame {
+            items: vec![brain_db_sdk::wire::types::ExtractorListItem {
+                extractor_id: 7,
+                namespace: "mirror".into(),
+                name: "llm".into(),
+                kind: 2,
+                schema_version: 1,
+                created_at_unix_nanos: 3,
+            }],
+            total: 1,
+            is_final: true,
+        });
+        assert_eq!(dto.total, 1);
+        assert_eq!(dto.items[0].extractor_id, 7);
+        assert_eq!(dto.items[0].kind, 2, "2 = llm");
+    }
+
+    #[test]
+    fn drop_maps_the_kind_segment_and_rejects_anything_else() {
+        let q = SchemaDropQuery { force: true };
+        let req = q.to_request("predicate", "works_at").unwrap();
+        assert_eq!(req.target_kind, schema_drop_target::PREDICATE);
+        assert_eq!(req.target_name, "works_at");
+        assert!(req.force);
+        assert!(req.namespace.is_empty(), "the namespace comes from act_as");
+
+        assert_eq!(
+            SchemaDropQuery::default()
+                .to_request("relation_type", "employs")
+                .unwrap()
+                .target_kind,
+            schema_drop_target::RELATION_TYPE
+        );
+
+        // Entity types are deliberately not droppable: they are global in the
+        // v1 storage model, so dropping one would race other namespaces.
+        let err = SchemaDropQuery::default()
+            .to_request("entity_type", "Person")
+            .unwrap_err();
+        assert!(err.contains("predicate"), "the error names what IS allowed");
+
+        assert!(
+            SchemaDropQuery::default()
+                .to_request("predicate", "  ")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn drop_defaults_to_refusing_to_orphan_live_rows() {
+        let req = SchemaDropQuery::default()
+            .to_request("predicate", "p")
+            .unwrap();
+        assert!(
+            !req.force,
+            "force is consent to orphan rows, so it is never the default"
+        );
+    }
+
+    #[test]
+    fn a_refused_drop_reports_why_rather_than_erroring() {
+        let dto = SchemaDropResponseDto::from(SchemaDropResponse {
+            namespace: "mirror".into(),
+            schema_version: 0,
+            target_kind: 0,
+            target_name: "works_at".into(),
+            dropped: false,
+            live_rows: 12,
+            validation_errors: vec![],
+        });
+        // `dropped: false` with `live_rows > 0` is the "still in use, and you
+        // did not say force" answer — a caller can act on that.
+        assert!(!dto.dropped);
+        assert_eq!(dto.live_rows, 12);
+        assert_eq!(dto.schema_version, 0, "nothing was bumped");
+    }
+}

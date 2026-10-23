@@ -251,3 +251,178 @@ impl From<QueryTraceResponse> for QueryTraceResponseDto {
         }
     }
 }
+
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    fn body(text: &str) -> QueryBody {
+        QueryBody {
+            text: text.into(),
+            ..QueryBody::default()
+        }
+    }
+
+    #[test]
+    fn an_omitted_retriever_list_lets_brain_route() {
+        let req = body("who works at Arc").to_request().unwrap();
+        assert_eq!(req.retrievers, RetrieverSelectionWire::Auto);
+        assert_eq!(req.limit, DEFAULT_LIMIT);
+    }
+
+    #[test]
+    fn auto_is_accepted_as_a_word_among_the_list() {
+        let req = QueryBody {
+            retrievers: vec!["semantic".into(), "auto".into()],
+            ..body("x")
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(
+            req.retrievers,
+            RetrieverSelectionWire::Auto,
+            "asking for auto alongside a pin means auto; the alternative is \
+             silently ignoring one of the two"
+        );
+    }
+
+    #[test]
+    fn pinning_retrievers_is_what_makes_an_explain_answerable() {
+        let req = QueryBody {
+            retrievers: vec!["graph".into(), "lexical".into()],
+            ..body("x")
+        }
+        .to_request()
+        .unwrap();
+        // Without a pin an explain answers "what would the router pick
+        // today", not "what would this plan cost".
+        assert_eq!(
+            req.retrievers,
+            RetrieverSelectionWire::Explicit(vec![RetrieverWire::Graph, RetrieverWire::Lexical])
+        );
+    }
+
+    #[test]
+    fn both_temporal_axes_survive_the_mapping() {
+        let req = QueryBody {
+            time_range: Some(TimeRangeDto {
+                from_unix_ms: Some(1),
+                to_unix_ms: Some(2),
+            }),
+            as_of_record_time_unix_nanos: Some(3),
+            ..body("x")
+        }
+        .to_request()
+        .unwrap();
+        // `time_filter` is when the content was true; `as_of_record_time` is
+        // what was BELIEVED then. Collapsing them is how bi-temporal data
+        // stops being bi-temporal.
+        let t = req.time_filter.unwrap();
+        assert_eq!((t.from_unix_ms, t.to_unix_ms), (Some(1), Some(2)));
+        assert_eq!(req.as_of_record_time_unix_nanos, Some(3));
+    }
+
+    #[test]
+    fn kinds_map_to_the_one_based_storage_byte() {
+        let req = QueryBody {
+            kinds: vec!["fact".into(), "directive".into()],
+            ..body("x")
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(req.kind_filter, vec![1, 6]);
+    }
+
+    #[test]
+    fn blank_text_unknown_names_and_bad_confidence_are_rejected() {
+        assert!(body("   ").to_request().is_err(), "blank text");
+        assert!(
+            QueryBody {
+                kinds: vec!["nonsense".into()],
+                ..body("x")
+            }
+            .to_request()
+            .is_err(),
+            "unknown kind"
+        );
+        assert!(
+            QueryBody {
+                retrievers: vec!["telepathy".into()],
+                ..body("x")
+            }
+            .to_request()
+            .is_err(),
+            "unknown retriever"
+        );
+        assert!(
+            QueryBody {
+                confidence_min: Some(1.5),
+                ..body("x")
+            }
+            .to_request()
+            .is_err(),
+            "confidence above 1.0"
+        );
+        assert!(
+            QueryBody {
+                entity_anchor: Some("not-a-uuid".into()),
+                ..body("x")
+            }
+            .to_request()
+            .is_err(),
+            "anchor that is not a uuid"
+        );
+    }
+
+    #[test]
+    fn limit_defaults_and_clamps() {
+        assert_eq!(body("x").to_request().unwrap().limit, DEFAULT_LIMIT);
+        assert_eq!(
+            QueryBody {
+                limit: Some(0),
+                ..body("x")
+            }
+            .to_request()
+            .unwrap()
+            .limit,
+            DEFAULT_LIMIT
+        );
+        assert_eq!(
+            QueryBody {
+                limit: Some(99_999),
+                ..body("x")
+            }
+            .to_request()
+            .unwrap()
+            .limit,
+            MAX_LIMIT
+        );
+    }
+
+    #[test]
+    fn explain_and_trace_wrap_the_same_query() {
+        let a = body("x").to_explain().unwrap();
+        let b = body("x").to_trace().unwrap();
+        assert_eq!(a.query.text, b.query.text);
+        assert_eq!(a.query.limit, b.query.limit);
+    }
+
+    #[test]
+    fn the_two_responses_say_estimate_versus_measurement() {
+        let e = QueryExplainResponseDto::from(QueryExplainResponse {
+            plan_text: "scan".into(),
+            estimated_cost_ms: 1.5,
+        });
+        let t = QueryTraceResponseDto::from(QueryTraceResponse {
+            trace_text: "ran".into(),
+            total_latency_ms: 2.5,
+        });
+        // Distinct field names on purpose: one is a guess that cost nothing,
+        // the other a measurement that ran the query.
+        let je = serde_json::to_value(e).unwrap();
+        let jt = serde_json::to_value(t).unwrap();
+        assert!(je.get("estimated_cost_ms").is_some());
+        assert!(je.get("total_latency_ms").is_none());
+        assert!(jt.get("total_latency_ms").is_some());
+    }
+}

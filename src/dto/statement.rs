@@ -799,3 +799,227 @@ impl StatementHistoryResponseDto {
         }
     }
 }
+
+#[cfg(test)]
+mod statement_authoring_tests {
+    use super::*;
+
+    const SUBJ: &str = "019faf38-50c7-7820-9048-980d79a1aa27";
+    const SID: &str = "019faf38-50f1-7202-a06f-fc1813453d61";
+
+    fn body() -> CreateStatementBody {
+        CreateStatementBody {
+            kind: "fact".into(),
+            subject: SUBJ.into(),
+            predicate: "works_at".into(),
+            object: StatementObjectDto::Value {
+                value: StatementValueDto::Text {
+                    value: "Arc".into(),
+                },
+            },
+            confidence: 1.0,
+            event_at_unix_nanos: 0,
+            valid_from_unix_nanos: 0,
+            valid_to_unix_nanos: 0,
+            extractor_id: 0,
+            schema_version: 0,
+            session_id: 0,
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_memory_object_round_trips_as_a_decimal_id() {
+        // THE bug this fixed: the read rendered a memory object's id as a
+        // UUID, which no route that takes a memory id could parse. Read and
+        // write now agree, so a read feeds straight back into a write.
+        let wire = StatementObjectWire::MemoryRef(5u128.to_be_bytes());
+        let dto = StatementObjectDto::from(wire);
+        let StatementObjectDto::Memory { ref id } = dto else {
+            panic!("expected a memory object");
+        };
+        assert_eq!(id, "5", "decimal, as every other memory id in the contract");
+        let back = dto.to_wire().unwrap();
+        assert_eq!(back, StatementObjectWire::MemoryRef(5u128.to_be_bytes()));
+    }
+
+    #[test]
+    fn entity_and_statement_objects_stay_uuids() {
+        for wire in [
+            StatementObjectWire::EntityRef([2u8; 16]),
+            StatementObjectWire::StatementRef([3u8; 16]),
+        ] {
+            let dto = StatementObjectDto::from(wire.clone());
+            let json = serde_json::to_value(&dto).unwrap();
+            assert!(json["id"].as_str().unwrap().contains('-'));
+            assert_eq!(dto.to_wire().unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn every_scalar_value_type_round_trips() {
+        for v in [
+            StatementValueWire::Text("t".into()),
+            StatementValueWire::Integer(-3),
+            StatementValueWire::Float(1.5),
+            StatementValueWire::Bool(true),
+            StatementValueWire::UnixNanos(9),
+            StatementValueWire::Blob(vec![1, 2]),
+        ] {
+            let dto = StatementValueDto::from(v.clone());
+            assert_eq!(StatementValueWire::from(dto), v);
+        }
+    }
+
+    #[test]
+    fn create_maps_kind_evidence_and_defaults() {
+        let req = CreateStatementBody {
+            kind: "preference".into(),
+            evidence: vec!["7".into(), "9".into()],
+            ..body()
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(req.kind, StatementKindWire::Preference);
+        let EvidenceRefWire::Inline(ids) = req.evidence else {
+            panic!("inline evidence");
+        };
+        assert_eq!(ids.len(), 2);
+        assert_eq!(u128::from_be_bytes(ids[0]), 7);
+        assert!(req.act_as.is_none());
+    }
+
+    #[test]
+    fn create_rejects_what_the_wire_would_accept_silently() {
+        assert!(
+            CreateStatementBody {
+                predicate: "  ".into(),
+                ..body()
+            }
+            .to_request()
+            .is_err(),
+            "blank predicate"
+        );
+        assert!(
+            CreateStatementBody {
+                kind: "vibes".into(),
+                ..body()
+            }
+            .to_request()
+            .is_err(),
+            "unknown kind"
+        );
+        assert!(
+            CreateStatementBody {
+                confidence: 2.0,
+                ..body()
+            }
+            .to_request()
+            .is_err(),
+            "confidence above 1.0"
+        );
+        assert!(
+            CreateStatementBody {
+                valid_from_unix_nanos: 100,
+                valid_to_unix_nanos: 50,
+                ..body()
+            }
+            .to_request()
+            .is_err(),
+            "a window that ends before it starts"
+        );
+    }
+
+    #[test]
+    fn a_zero_valid_to_means_still_valid_not_a_backwards_window() {
+        let req = CreateStatementBody {
+            valid_from_unix_nanos: 100,
+            valid_to_unix_nanos: 0,
+            ..body()
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(req.valid_to_unix_nanos, 0);
+    }
+
+    #[test]
+    fn supersede_nests_a_whole_replacement_under_the_old_id() {
+        let req = SupersedeStatementBody { statement: body() }
+            .to_request(SID)
+            .unwrap();
+        assert_eq!(req.old_statement_id[15], 0x61);
+        assert_eq!(req.new_statement.predicate, "works_at");
+    }
+
+    #[test]
+    fn retire_carries_the_reason_to_both_verbs() {
+        let q = StatementRetireQuery {
+            reason: 3,
+            message: Some("wrong".into()),
+        };
+        let t = q.to_tombstone(SID).unwrap();
+        let r = q.to_retract(SID).unwrap();
+        assert_eq!((t.reason, t.reason_message.as_str()), (3, "wrong"));
+        assert_eq!((r.reason, r.reason_message.as_str()), (3, "wrong"));
+    }
+
+    #[test]
+    fn an_unset_chain_link_is_absent_not_the_nil_uuid() {
+        // All-zero means "unset" on the wire; rendering it would present
+        // absence as a real id a caller could then go and fetch.
+        assert!(optional_uuid(&[0u8; 16]).is_none());
+        assert!(optional_uuid(&[1u8; 16]).is_some());
+    }
+
+    #[test]
+    fn history_folds_frames_and_takes_the_last_cursor() {
+        let frame = |cursor: Vec<u8>, n: usize| StatementHistoryResponseFrame {
+            items: (0..n)
+                .map(|_| StatementView {
+                    statement_id: [1u8; 16],
+                    kind: StatementKindWire::Fact,
+                    subject: [2u8; 16],
+                    subject_pending_audit_id: [0u8; 16],
+                    predicate: "p".into(),
+                    object: StatementObjectWire::Value(StatementValueWire::Bool(true)),
+                    confidence: 1.0,
+                    evidence: EvidenceRefWire::Inline(vec![]),
+                    extractor_id: 0,
+                    extracted_at_unix_nanos: 0,
+                    schema_version: 0,
+                    valid_from_unix_nanos: 0,
+                    valid_to_unix_nanos: 0,
+                    event_at_unix_nanos: 0,
+                    version: 1,
+                    superseded_by: [0u8; 16],
+                    supersedes: [0u8; 16],
+                    chain_root: [9u8; 16],
+                    tombstoned: false,
+                    tombstoned_at_unix_nanos: 0,
+                    tombstone_reason: 0,
+                    flags: 0,
+                    is_stateful: false,
+                })
+                .collect(),
+            chain_root: [9u8; 16],
+            total_versions: 3,
+            next_cursor: cursor,
+            is_final: false,
+        };
+        let page = StatementHistoryResponseDto::from_frames(vec![
+            frame(vec![0x01], 2),
+            frame(vec![0x02], 1),
+        ]);
+        assert_eq!(page.items.len(), 3, "frames are flattened");
+        assert_eq!(page.total_versions, 3);
+        // An earlier frame's cursor would replay rows this page returned.
+        assert_eq!(page.next_cursor.as_deref(), Some("02"));
+    }
+
+    #[test]
+    fn a_final_page_has_no_cursor() {
+        let page = StatementHistoryResponseDto::from_frames(vec![]);
+        assert!(page.next_cursor.is_none());
+        assert!(page.items.is_empty());
+    }
+}

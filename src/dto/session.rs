@@ -166,3 +166,94 @@ impl From<SessionDeleteResponse> for SessionErasedDto {
         }
     }
 }
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn create_takes_the_caller_s_own_id_verbatim() {
+        let req = CreateSessionBody {
+            session_id: 42,
+            title: Some("  planning  ".into()),
+        }
+        .to_request();
+        assert_eq!(req.session_id, 42, "client-chosen, so it is not remapped");
+        assert_eq!(req.title.as_deref(), Some("  planning  "));
+        assert!(req.act_as.is_none());
+    }
+
+    #[test]
+    fn list_limit_defaults_and_clamps() {
+        assert_eq!(
+            ListSessionsQuery { limit: None }.to_request().limit,
+            DEFAULT_LIST_LIMIT
+        );
+        assert_eq!(
+            ListSessionsQuery {
+                limit: Some(100_000)
+            }
+            .to_request()
+            .limit,
+            MAX_LIST_LIMIT
+        );
+    }
+
+    #[test]
+    fn delete_is_soft_unless_hard_is_asked_for_by_name() {
+        let soft = delete_session_request(7, &DeleteSessionQuery::default());
+        assert!(
+            !soft.hard,
+            "a bare DELETE must not be the irreversible form"
+        );
+        let hard = delete_session_request(7, &DeleteSessionQuery { hard: true });
+        assert!(hard.hard);
+        assert_eq!(hard.session_id, 7);
+    }
+
+    #[test]
+    fn a_session_id_is_a_number_not_a_uuid() {
+        let dto = SessionProvisionDto::from(SessionCreateResponse {
+            space_id: [0u8; 16],
+            session_id: 9,
+            created: true,
+            created_at_unix_nanos: 1,
+            last_active_unix_nanos: 2,
+            memory_count: 0,
+        });
+        // The same representation `EncodeBody.session` carries, so a memory
+        // and the session it was written into share one id form.
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["session_id"], serde_json::json!(9));
+        assert!(
+            json["space_id"].as_str().unwrap().contains('-'),
+            "a space id IS a uuid, unlike the session id beside it"
+        );
+    }
+
+    #[test]
+    fn listing_projects_every_row() {
+        let page = ListSessionsResponseDto::from(SessionListResponse {
+            space_id: [1u8; 16],
+            sessions: vec![
+                brain_db_sdk::wire::types::SessionView {
+                    session_id: 1,
+                    created_at_unix_nanos: 10,
+                    last_active_unix_nanos: 11,
+                    title: Some("a".into()),
+                    memory_count: 2,
+                },
+                brain_db_sdk::wire::types::SessionView {
+                    session_id: 2,
+                    created_at_unix_nanos: 20,
+                    last_active_unix_nanos: 21,
+                    title: None,
+                    memory_count: 0,
+                },
+            ],
+        });
+        assert_eq!(page.sessions.len(), 2);
+        assert_eq!(page.sessions[0].title.as_deref(), Some("a"));
+        assert!(page.sessions[1].title.is_none());
+    }
+}

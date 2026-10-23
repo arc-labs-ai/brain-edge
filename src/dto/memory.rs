@@ -965,3 +965,149 @@ impl From<MaterializeProceduralResponse> for MaterializeProceduralResponseDto {
         }
     }
 }
+
+#[cfg(test)]
+mod memory_extras_tests {
+    use super::*;
+
+    fn vector_body() -> EncodeVectorBody {
+        EncodeVectorBody {
+            text: "hello".into(),
+            vector: vec![0.1, 0.2],
+            model_fingerprint: "000102030405060708090a0b0c0d0e0f".into(),
+            session: None,
+            kind: None,
+            salience_hint: None,
+            deduplicate: false,
+        }
+    }
+
+    #[test]
+    fn occurred_at_accepts_both_spellings() {
+        // The read side of this same value is `occurred_at_unix_nanos`, and
+        // every other temporal field carries its unit. Aliased rather than
+        // renamed: the short form is long-standing public wire.
+        let short: EncodeBody = serde_json::from_str(r#"{"text":"x","occurred_at":7}"#).unwrap();
+        let long: EncodeBody =
+            serde_json::from_str(r#"{"text":"x","occurred_at_unix_nanos":7}"#).unwrap();
+        assert_eq!(short.occurred_at, Some(7));
+        assert_eq!(long.occurred_at, Some(7));
+    }
+
+    #[test]
+    fn a_vector_encode_requires_the_model_that_produced_it() {
+        let req = vector_body().to_request().unwrap();
+        assert_eq!(req.model_fingerprint[15], 0x0f);
+        assert_eq!(req.vector, vec![0.1, 0.2]);
+        assert_eq!(req.kind, MemoryKindWire::Episodic, "0 is the default kind");
+
+        // Vectors from different models are not comparable, so a recall that
+        // mixed them would rank nonsense confidently. A wrong-length
+        // fingerprint must not silently become a zero one.
+        assert!(
+            EncodeVectorBody {
+                model_fingerprint: "00ff".into(),
+                ..vector_body()
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            EncodeVectorBody {
+                model_fingerprint: "nothex".repeat(6),
+                ..vector_body()
+            }
+            .to_request()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_vector_encode_rejects_empty_text_vector_and_bad_hint() {
+        assert!(
+            EncodeVectorBody {
+                text: "  ".into(),
+                ..vector_body()
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            EncodeVectorBody {
+                vector: vec![],
+                ..vector_body()
+            }
+            .to_request()
+            .is_err(),
+            "an empty vector is not an embedding"
+        );
+        assert!(
+            EncodeVectorBody {
+                salience_hint: Some(2.0),
+                ..vector_body()
+            }
+            .to_request()
+            .is_err()
+        );
+        assert!(
+            EncodeVectorBody {
+                kind: Some(9),
+                ..vector_body()
+            }
+            .to_request()
+            .is_err(),
+            "an unknown kind byte"
+        );
+    }
+
+    #[test]
+    fn materialize_defaults_to_no_filters() {
+        let req = MaterializeProceduralBody::default().to_request().unwrap();
+        assert!(
+            req.session_filter.is_none(),
+            "an empty list is no filter, not a filter matching nothing"
+        );
+        assert_eq!(req.categories, Vec::<String>::new());
+        assert_eq!(req.space_id, [0u8; 16], "the space comes from act_as");
+    }
+
+    #[test]
+    fn materialize_carries_filters_and_guards_confidence() {
+        let req = MaterializeProceduralBody {
+            sessions: vec![1, 2],
+            top_k: 5,
+            min_confidence: 0.4,
+            categories: vec!["tone".into()],
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(req.session_filter.unwrap(), vec![1, 2]);
+        assert_eq!(req.top_k, 5);
+        assert_eq!(req.categories, vec!["tone".to_string()]);
+
+        assert!(
+            MaterializeProceduralBody {
+                min_confidence: 1.5,
+                ..MaterializeProceduralBody::default()
+            }
+            .to_request()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_trimmed_block_says_so() {
+        let dto = MaterializeProceduralResponseDto::from(MaterializeProceduralResponse {
+            system_block: "Be terse.".into(),
+            statement_ids: vec![[1u8; 16]],
+            total_candidates: 9,
+            trimmed_by_budget: true,
+        });
+        // Without this a caller assumes the block is complete and silently
+        // drops directives it never learned about.
+        assert!(dto.trimmed_by_budget);
+        assert_eq!(dto.total_candidates, 9);
+        assert_eq!(dto.statement_ids.len(), 1);
+        assert!(dto.statement_ids[0].contains('-'));
+    }
+}

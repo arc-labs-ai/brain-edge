@@ -855,3 +855,168 @@ impl From<EntityTombstoneResponse> for TombstoneEntityResponseDto {
         }
     }
 }
+
+#[cfg(test)]
+mod entity_authoring_tests {
+    use super::*;
+
+    const ID: &str = "019faf38-50c7-7820-9048-980d79a1aa27";
+    const OTHER: &str = "019faf38-50c7-7820-9048-980d79a1aa28";
+
+    #[test]
+    fn update_replaces_wholesale_so_an_omitted_field_clears_it() {
+        let req = UpdateEntityBody {
+            canonical_name: "  Ada  ".into(),
+            aliases: Vec::new(),
+            attributes: None,
+        }
+        .to_request(ID)
+        .unwrap();
+        assert_eq!(req.canonical_name, "Ada", "trimmed");
+        // PUT, not PATCH: this is what the verb promises, and why the read
+        // exposes `attributes` so a caller can carry them back.
+        assert_eq!(req.aliases, Vec::<String>::new());
+        assert_eq!(req.attributes_blob, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn update_round_trips_the_attribute_blob_through_hex() {
+        let req = UpdateEntityBody {
+            canonical_name: "Ada".into(),
+            aliases: vec!["Lovelace".into()],
+            attributes: Some("00ff10".into()),
+        }
+        .to_request(ID)
+        .unwrap();
+        assert_eq!(req.attributes_blob, vec![0x00, 0xff, 0x10]);
+        assert_eq!(req.aliases, vec!["Lovelace".to_string()]);
+    }
+
+    #[test]
+    fn the_read_exposes_what_the_write_replaces() {
+        let view = brain_db_sdk::wire::types::EntityView {
+            entity_id: [1u8; 16],
+            entity_type_id: 1,
+            canonical_name: "Ada".into(),
+            normalized_name: "ada".into(),
+            aliases: vec![],
+            attributes_blob: vec![0xde, 0xad],
+            mention_count: 0,
+            created_at_unix_nanos: 0,
+            updated_at_unix_nanos: 0,
+            merged_into: [0u8; 16],
+            embedding_version: 0,
+            flags: 0,
+        };
+        let dto = EntityDetailDto::from(view);
+        // Without this a PUT would clear attributes the caller never saw.
+        assert_eq!(dto.attributes.as_deref(), Some("dead"));
+    }
+
+    #[test]
+    fn an_empty_blob_is_absent_rather_than_an_empty_string() {
+        let view = brain_db_sdk::wire::types::EntityView {
+            entity_id: [1u8; 16],
+            entity_type_id: 1,
+            canonical_name: "Ada".into(),
+            normalized_name: "ada".into(),
+            aliases: vec![],
+            attributes_blob: vec![],
+            mention_count: 0,
+            created_at_unix_nanos: 0,
+            updated_at_unix_nanos: 0,
+            merged_into: [0u8; 16],
+            embedding_version: 0,
+            flags: 0,
+        };
+        assert!(EntityDetailDto::from(view).attributes.is_none());
+    }
+
+    #[test]
+    fn rename_keeps_the_old_name_as_an_alias_by_default() {
+        let req = RenameEntityBody {
+            new_canonical_name: "Ada King".into(),
+            move_to_alias: default_move_to_alias(),
+        }
+        .to_request(ID)
+        .unwrap();
+        // A name an entity was known by is how a later mention still
+        // resolves; losing it should be asked for.
+        assert!(req.move_to_alias);
+    }
+
+    #[test]
+    fn merge_refuses_an_entity_merged_into_itself() {
+        let err = MergeEntityBody {
+            merged: ID.into(),
+            confidence: 1.0,
+            reason: String::new(),
+        }
+        .to_request(ID)
+        .unwrap_err();
+        assert!(err.contains("itself"));
+    }
+
+    #[test]
+    fn merge_validates_confidence_before_the_wire_sees_it() {
+        for bad in [-0.1, 1.1] {
+            assert!(
+                MergeEntityBody {
+                    merged: OTHER.into(),
+                    confidence: bad,
+                    reason: String::new(),
+                }
+                .to_request(ID)
+                .is_err(),
+                "confidence {bad} should be rejected"
+            );
+        }
+        let ok = MergeEntityBody {
+            merged: OTHER.into(),
+            confidence: 0.75,
+            reason: "same person".into(),
+        }
+        .to_request(ID)
+        .unwrap();
+        assert_eq!(ok.survivor[15], 0x27, "the PATH id is the survivor");
+        assert_eq!(ok.merged[15], 0x28);
+        assert_eq!(ok.reason, "same person");
+    }
+
+    #[test]
+    fn blank_names_and_bad_ids_are_rejected() {
+        assert!(
+            UpdateEntityBody {
+                canonical_name: "   ".into(),
+                aliases: vec![],
+                attributes: None,
+            }
+            .to_request(ID)
+            .is_err()
+        );
+        assert!(
+            RenameEntityBody {
+                new_canonical_name: String::new(),
+                move_to_alias: true,
+            }
+            .to_request(ID)
+            .is_err()
+        );
+        assert!(unmerge_request("not-a-uuid").is_err());
+        assert!(tombstone_request("nope", &TombstoneEntityQuery::default()).is_err());
+    }
+
+    #[test]
+    fn a_tombstone_reason_is_optional_but_carried() {
+        let bare = tombstone_request(ID, &TombstoneEntityQuery::default()).unwrap();
+        assert_eq!(bare.reason, "");
+        let given = tombstone_request(
+            ID,
+            &TombstoneEntityQuery {
+                reason: Some("duplicate".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(given.reason, "duplicate");
+    }
+}

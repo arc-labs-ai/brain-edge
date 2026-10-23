@@ -170,3 +170,132 @@ impl From<SpaceDeleteResponse> for SpaceErasedDto {
         }
     }
 }
+
+#[cfg(test)]
+mod space_tests {
+    use super::*;
+
+    fn view(id: &str, memories: u64) -> brain_db_sdk::wire::types::SpaceView {
+        brain_db_sdk::wire::types::SpaceView {
+            space_id: id.into(),
+            created_at_unix_nanos: 1,
+            last_active_unix_nanos: 2,
+            memory_count: memories,
+            session_count: 3,
+        }
+    }
+
+    #[test]
+    fn create_carries_metadata_as_bytes_and_leaves_act_as_to_the_pool() {
+        let req = CreateSpaceBody {
+            metadata: Some("tier=free".into()),
+        }
+        .to_request();
+        assert_eq!(req.metadata.as_deref(), Some(b"tier=free".as_slice()));
+        // The pool fills `act_as`; a DTO that set it would pin the wrong
+        // tenant on the shared-service path.
+        assert!(req.act_as.is_none());
+
+        let bare = CreateSpaceBody::default().to_request();
+        assert!(bare.metadata.is_none(), "absent, not an empty blob");
+    }
+
+    #[test]
+    fn list_limit_defaults_and_clamps_rather_than_failing() {
+        assert_eq!(
+            ListSpacesQuery { limit: None }.to_request().limit,
+            DEFAULT_LIST_LIMIT
+        );
+        // Zero is a caller saying nothing useful, not a request for no rows.
+        assert_eq!(
+            ListSpacesQuery { limit: Some(0) }.to_request().limit,
+            DEFAULT_LIST_LIMIT
+        );
+        assert_eq!(ListSpacesQuery { limit: Some(7) }.to_request().limit, 7);
+        assert_eq!(
+            ListSpacesQuery {
+                limit: Some(100_000)
+            }
+            .to_request()
+            .limit,
+            MAX_LIST_LIMIT,
+            "an over-large ask is clamped, not rejected"
+        );
+    }
+
+    #[test]
+    fn provision_reports_which_path_it_took() {
+        let made = SpaceProvisionDto::from(SpaceCreateResponse {
+            space_id: "s".into(),
+            created: true,
+            created_at_unix_nanos: 1,
+            last_active_unix_nanos: 2,
+            memory_count: 0,
+            session_count: 0,
+        });
+        assert!(made.created);
+
+        let existed = SpaceProvisionDto::from(SpaceCreateResponse {
+            space_id: "s".into(),
+            created: false,
+            created_at_unix_nanos: 1,
+            last_active_unix_nanos: 2,
+            memory_count: 4,
+            session_count: 1,
+        });
+        assert!(
+            !existed.created,
+            "the create is idempotent; the flag is the only thing that \
+             distinguishes made-it from already-there"
+        );
+    }
+
+    #[test]
+    fn a_partial_listing_says_so() {
+        let page = ListSpacesResponseDto::from(SpaceListResponse {
+            spaces: vec![view("a", 1), view("b", 2)],
+            cross_shard_complete: false,
+        });
+        assert_eq!(page.spaces.len(), 2);
+        assert_eq!(page.spaces[1].memory_count, 2);
+        assert!(
+            !page.cross_shard_complete,
+            "passed through, not smoothed over: a partial listing presented \
+             as complete is how a caller concludes a space is gone"
+        );
+    }
+
+    #[test]
+    fn an_erasure_of_nothing_is_reported_as_such() {
+        let gone = SpaceErasedDto::from(SpaceDeleteResponse {
+            space_id: "s".into(),
+            existed: false,
+            memories_forgotten: 0,
+        });
+        assert!(!gone.existed);
+        assert_eq!(gone.memories_forgotten, 0);
+    }
+
+    #[test]
+    fn the_json_field_names_are_the_contract() {
+        let json = serde_json::to_value(SpaceProvisionDto::from(SpaceCreateResponse {
+            space_id: "sp".into(),
+            created: true,
+            created_at_unix_nanos: 11,
+            last_active_unix_nanos: 22,
+            memory_count: 5,
+            session_count: 2,
+        }))
+        .unwrap();
+        for key in [
+            "space_id",
+            "created",
+            "created_at_unix_nanos",
+            "last_active_unix_nanos",
+            "memory_count",
+            "session_count",
+        ] {
+            assert!(json.get(key).is_some(), "missing `{key}` from the wire");
+        }
+    }
+}
