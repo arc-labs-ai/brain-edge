@@ -30,7 +30,8 @@ use brain_db_sdk::wire::types::{
     EncodeStageArtifact, EntityCreateResponse, EntityGetResponse, EntityListItem,
     EntityListResponseFrame, EntityResolveResponse, EntityView, EvidenceRefWire, ForgetResponse,
     GetCapabilitiesResponse, GraphEdge, GraphFetchResponseFrame, GraphNode, HelloPayload,
-    InferenceKind, InferenceStep, LinkResponse, MemoryEdgeWire, MemoryInspectResponse,
+    InferenceKind, InferenceStep, LinkResponse, MemoryEdgeWire, MemoryInspectRequest,
+    MemoryInspectResponse,
     MemoryKindWire, MemoryListItem, MemoryListResponseFrame, MemoryResult, PlanResponseFrame,
     PlanStatus, PlanStep, ReasonResponseFrame, ReasonStatus, RecallResponseFrame,
     RelationGetResponse, RelationListFromResponseFrame, RelationListToResponseFrame,
@@ -526,51 +527,92 @@ async fn dispatch_memory_ops(sock: &mut TcpStream, f: &Frame) {
         )
         .await;
     } else if op == Opcode::MemoryInspectReq.as_u16() {
-        send_frame(
-            sock,
-            Opcode::MemoryInspectResp,
-            sid,
-            &MemoryInspectResponse {
-                found: true,
-                memory_id: id16(0x2a),
-                text: "remembered text".into(),
-                artifact: EncodeStageArtifact {
-                    vector: vec![0.1, 0.2, 0.3],
-                    record: None,
-                    hype_questions: vec!["who works where?".into()],
-                    keyword_fields: Vec::new(),
-                    graph: None,
-                },
-                // Both directions, and one edge with an annotation: the read
-                // side of `POST /v1/links`, which had no HTTP reader at all
-                // until MEMORY_INSPECT started returning it.
-                edges: vec![
-                    MemoryEdgeWire {
-                        kind: EdgeKindWire::Caused,
-                        direction: EdgeDirectionWire::Outgoing,
-                        peer: 77,
-                        weight: 0.5,
-                        created_at_unix_nanos: 1_000,
-                        annotation: Some("manually asserted".into()),
-                    },
-                    MemoryEdgeWire {
-                        kind: EdgeKindWire::Supports,
-                        direction: EdgeDirectionWire::Incoming,
-                        peer: 78,
-                        weight: 0.25,
-                        created_at_unix_nanos: 1_001,
-                        annotation: None,
-                    },
-                ],
-            },
-        )
-        .await;
+        dispatch_memory_inspect(sock, f).await;
     } else {
         dispatch_reasoning_ops(sock, f).await;
     }
 }
 
 /// Reasoning + memory-graph edge ops: plan, reason (both streamed), link, unlink.
+/// The `MEMORY_INSPECT` arm of the mock engine.
+///
+/// Its own function because it answers two ways, which is the point of it:
+/// memory 99 reads back as absent (`found: false`) and everything else reads
+/// back as present. The edge turns the first into a `404` and the second into
+/// a `200`, and both directions need covering.
+async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
+    // An id the engine does not have — or that belongs to another tenant,
+    // which it reports the same way rather than as forbidden. The edge parses
+    // the path segment as a u128, so "99" arrives as big-endian 99, not as a
+    // filled `id16`.
+    const ABSENT_ID: [u8; 16] = 99u128.to_be_bytes();
+
+    let absent = from_cbor_bytes::<MemoryInspectRequest>(&f.payload)
+        .is_ok_and(|r| r.memory_id == ABSENT_ID);
+    if absent {
+        send_frame(
+            sock,
+            Opcode::MemoryInspectResp,
+            f.stream_id,
+            &MemoryInspectResponse {
+                found: false,
+                memory_id: ABSENT_ID,
+                text: String::new(),
+                artifact: EncodeStageArtifact {
+                    vector: Vec::new(),
+                    record: None,
+                    hype_questions: Vec::new(),
+                    keyword_fields: Vec::new(),
+                    graph: None,
+                },
+                edges: Vec::new(),
+            },
+        )
+        .await;
+        return;
+    }
+
+    send_frame(
+        sock,
+        Opcode::MemoryInspectResp,
+        f.stream_id,
+        &MemoryInspectResponse {
+            found: true,
+            memory_id: id16(0x2a),
+            text: "remembered text".into(),
+            artifact: EncodeStageArtifact {
+                vector: vec![0.1, 0.2, 0.3],
+                record: None,
+                hype_questions: vec!["who works where?".into()],
+                keyword_fields: Vec::new(),
+                graph: None,
+            },
+            // Both directions, and one edge with an annotation: the read side
+            // of `POST /v1/links`, which had no HTTP reader at all until
+            // MEMORY_INSPECT started returning it.
+            edges: vec![
+                MemoryEdgeWire {
+                    kind: EdgeKindWire::Caused,
+                    direction: EdgeDirectionWire::Outgoing,
+                    peer: 77,
+                    weight: 0.5,
+                    created_at_unix_nanos: 1_000,
+                    annotation: Some("manually asserted".into()),
+                },
+                MemoryEdgeWire {
+                    kind: EdgeKindWire::Supports,
+                    direction: EdgeDirectionWire::Incoming,
+                    peer: 78,
+                    weight: 0.25,
+                    created_at_unix_nanos: 1_001,
+                    annotation: None,
+                },
+            ],
+        },
+    )
+    .await;
+}
+
 async fn dispatch_reasoning_ops(sock: &mut TcpStream, f: &Frame) {
     let sid = f.stream_id;
     let op = f.opcode;
@@ -1088,11 +1130,28 @@ async fn forget_reports_edges_removed() {
 }
 
 #[tokio::test]
+async fn memory_inspect_404s_an_id_the_engine_does_not_have() {
+    // The engine answers an absent — or another tenant's — id with
+    // `found: false`, because the wire has no status code to say it with.
+    // Over HTTP there is one, and every other single-resource read on this
+    // edge uses it, so forwarding a 200 here would make this the one route
+    // where a caller has to read the body to learn the resource is missing.
+    let (state, meter) = state_and_meter().await;
+    let (status, body) = send(state, "GET", "/v1/memories/99/inspect", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+    // Still a real call that reached the engine, so it still meters.
+    assert_eq!(meter.ops(), vec!["memory_inspect"]);
+}
+
+#[tokio::test]
 async fn memory_inspect_returns_artifact_bundle() {
     let (state, meter) = state_and_meter().await;
     let (status, body) = send(state, "GET", "/v1/memories/42/inspect", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["found"], true);
+    // No `found` in the body: a 200 IS the "found" answer, and an absent
+    // memory is a 404 like every other single-resource read here.
+    assert!(body.get("found").is_none(), "{body}");
     assert_eq!(body["text"], "remembered text");
     let vector = body["artifact"]["vector"].as_array().expect("vector array");
     assert_eq!(vector.len(), 3);

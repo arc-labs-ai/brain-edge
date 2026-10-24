@@ -37,6 +37,10 @@ tower-http = { version = "0.6", features = [
     # caller when they supply one, so a client's bug report names a log line.
     "request-id",
 ] }
+# Draining an over-cap request body frame by frame, so the 413 reaches the
+# caller instead of being erased by the connection reset (see
+# `app::middleware::body_limit`). Already in the lock graph via axum/hyper.
+http-body-util = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

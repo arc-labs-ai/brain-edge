@@ -1,6 +1,7 @@
 //! The HTTP surface: the data-plane router.
 
 pub mod handlers;
+pub mod middleware;
 
 use axum::Router;
 use axum::routing::get;

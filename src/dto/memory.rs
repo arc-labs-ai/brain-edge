@@ -300,11 +300,21 @@ impl MemoryListPageDto {
 /// write-artifact bundle in a friendly, per-stage shape: what each write
 /// stage produced (embedding vector, stored record, analyzed keyword terms,
 /// write-time HyPE questions, extracted knowledge graph) plus the memory text.
-/// `found = false` (with an empty `artifact`) when the id doesn't exist under
-/// the caller's scope.
+///
+/// There is no `found` flag. The wire response carries one, because at the
+/// wire level there is no status code to carry it instead; over HTTP an
+/// absent memory is a `404`, the same as every other single-resource read on
+/// this edge (`/v1/entities/{id}`, `/v1/statements/{id}`, `/v1/relations/{id}`).
+/// Forwarding the flag would have made this the one read where a missing
+/// resource arrives as `200` — and a `found` field that is `true` in every
+/// response a client can actually receive is worse than no field at all,
+/// because it invites a branch that never runs.
+///
+/// An existing memory whose artifact bundle has not been written yet is a
+/// different case and still a `200`: the memory is there, with an empty
+/// `artifact`.
 #[derive(Debug, Serialize)]
 pub struct MemoryInspectDto {
-    pub found: bool,
     /// Decimal string of the 128-bit memory id (matches `/v1/memories`).
     pub memory_id: String,
     pub text: String,
@@ -353,9 +363,11 @@ impl From<MemoryEdgeWire> for MemoryEdgeDto {
 }
 
 impl From<MemoryInspectResponse> for MemoryInspectDto {
+    /// Callers must check `response.found` first — see the handler. A
+    /// not-found response converts to a shell of empty fields, which is not a
+    /// thing to serve.
     fn from(r: MemoryInspectResponse) -> Self {
         Self {
-            found: r.found,
             memory_id: mem_id_decimal(&r.memory_id),
             text: r.text,
             artifact: StageArtifactDto::from(r.artifact),
@@ -785,7 +797,6 @@ mod memory_tests {
             ],
         };
         let dto = MemoryInspectDto::from(resp);
-        assert!(dto.found);
         assert_eq!(dto.text, "hello");
         assert_eq!(dto.artifact.vector, vec![0.1, 0.2]);
         assert_eq!(dto.artifact.record.as_ref().unwrap().vector_dim, 384);

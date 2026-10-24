@@ -134,6 +134,7 @@ dependencies = [
  "axum",
  "brain-db-sdk",
  "futures-core",
+ "http-body-util",
  "reqwest",
  "ring",
  "serde",

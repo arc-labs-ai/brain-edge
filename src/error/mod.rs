@@ -114,6 +114,20 @@ impl ApiError {
         }
     }
 
+    /// A `413` for a body past this deployment's cap.
+    ///
+    /// The message names the actual size and the cap, because the cap is
+    /// configurable: told only "too large", a caller cannot tell whether to
+    /// split the payload in two or in twenty.
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            code: "payload_too_large",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
     /// A `400` for a malformed request the edge itself rejects.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {

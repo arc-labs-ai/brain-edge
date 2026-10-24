@@ -112,7 +112,17 @@ pub fn harden(router: Router, request_timeout: Duration, max_body_bytes: usize) 
             StatusCode::REQUEST_TIMEOUT,
             request_timeout,
         ))
+        // The cap, twice over, and the order is the point. The tower-http
+        // layer is the backstop: it is the only one of the two that can catch
+        // a chunked body, whose length is not known until it has been read.
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        // Outside it, the `Content-Length` case — every request the SDKs make
+        // — refused only after the body has been drained, so the 413 survives
+        // the connection close. See the module docs for why that is needed.
+        .layer(axum::middleware::from_fn_with_state(
+            max_body_bytes,
+            app::middleware::body_limit::enforce,
+        ))
         // Correlation, outermost so every response carries it — including the
         // ones the layers above generate without reaching a handler (413 from
         // the body cap, 408 from the timeout). A caller-supplied
