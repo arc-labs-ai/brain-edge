@@ -643,6 +643,7 @@ async fn a_resolved_tenant_reaches_the_sink() {
             answer: Ok(ResolvedCredential {
                 credential: "brain_key".into(),
                 tenant: Some("acme/prod".into()),
+                act_as: None,
             }),
         }),
         meter.clone(),

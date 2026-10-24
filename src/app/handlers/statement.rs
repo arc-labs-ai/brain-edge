@@ -25,8 +25,9 @@ pub async fn get(
     Path(id): Path<String>,
     Query(query): Query<GetStatementQuery>,
 ) -> Result<Json<StatementDetailDto>, ApiError> {
-    let req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
+    let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.get_statement(&req).await;
@@ -48,8 +49,9 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<ListStatementsQuery>,
 ) -> Result<Json<ListStatementsResponseDto>, ApiError> {
-    let req = query.to_request().map_err(ApiError::bad_request)?;
+    let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     // The streamed frames rather than the flattened views: the resume cursor
@@ -83,8 +85,9 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateStatementBody>,
 ) -> Result<(StatusCode, Json<CreateStatementResponseDto>), ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.create_statement(&req).await;
@@ -104,8 +107,9 @@ pub async fn supersede(
     Path(id): Path<String>,
     Json(body): Json<SupersedeStatementBody>,
 ) -> Result<(StatusCode, Json<SupersedeStatementResponseDto>), ApiError> {
-    let req = body.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.supersede_statement(&req).await;
@@ -128,8 +132,9 @@ pub async fn tombstone(
     Path(id): Path<String>,
     Query(query): Query<StatementRetireQuery>,
 ) -> Result<Json<TombstoneStatementResponseDto>, ApiError> {
-    let req = query.to_tombstone(&id).map_err(ApiError::bad_request)?;
+    let mut req = query.to_tombstone(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.tombstone_statement(&req).await;
@@ -151,8 +156,9 @@ pub async fn retract(
     Path(id): Path<String>,
     Query(query): Query<StatementRetireQuery>,
 ) -> Result<Json<RetractStatementResponseDto>, ApiError> {
-    let req = query.to_retract(&id).map_err(ApiError::bad_request)?;
+    let mut req = query.to_retract(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.retract_statement(&req).await;
@@ -169,8 +175,9 @@ pub async fn history(
     Path(id): Path<String>,
     Query(query): Query<StatementHistoryQuery>,
 ) -> Result<Json<StatementHistoryResponseDto>, ApiError> {
-    let req = query.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.statement_history_frames(&req).await;

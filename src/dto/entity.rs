@@ -778,6 +778,7 @@ impl UpdateEntityBody {
                 None => Vec::new(),
             },
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
@@ -816,6 +817,7 @@ impl RenameEntityBody {
             new_canonical_name,
             move_to_alias: self.move_to_alias,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
@@ -859,6 +861,7 @@ impl MergeEntityBody {
             confidence: self.confidence,
             reason: self.reason.clone(),
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
@@ -871,6 +874,7 @@ pub fn unmerge_request(id: &str) -> Result<EntityUnmergeRequest, String> {
     Ok(EntityUnmergeRequest {
         merged_entity: parse_uuid(id)?,
         request_id: brain_db_sdk::new_id(),
+        act_as: None,
     })
 }
 
@@ -895,6 +899,7 @@ pub fn tombstone_request(
         entity_id: parse_uuid(id)?,
         reason: query.reason.clone().unwrap_or_default(),
         request_id: brain_db_sdk::new_id(),
+        act_as: None,
     })
 }
 

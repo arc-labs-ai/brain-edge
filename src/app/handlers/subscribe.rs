@@ -125,12 +125,15 @@ pub async fn subscribe(
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
 
-    // The space Brain resolved from the credential. Read here rather than in
-    // the DTO because this is the authorization boundary: the feed is scoped
-    // to who the caller turned out to be, not to what they asked for.
-    let req = query
-        .to_request(client.connection().space_id, resume_from)
+    // The space the feed is scoped to. Read here rather than in the DTO
+    // because this is the authorization boundary: the feed covers who the
+    // caller turned out to be, not what they asked for. `ident` rather than
+    // `connection()` so a hosted tenant gets its own space and not the shared
+    // service principal's.
+    let mut req = query
+        .to_request(ident.space_id(client.connection()), resume_from)
         .map_err(ApiError::bad_request)?;
+    ident.scope(&mut req);
 
     let out = client.subscribe(&req).await;
     state.record("subscribe", &ident, Outcome::of(&out));

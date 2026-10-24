@@ -30,8 +30,9 @@ pub async fn create(
     // The body is optional: there is nothing required in it, and making a
     // provision call carry `{}` to succeed is friction for no gain.
     let body = body.map_or_else(CreateSpaceBody::default, |Json(b)| b);
-    let req = body.to_request();
+    let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.create_space(&req).await;
@@ -51,8 +52,9 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<ListSpacesQuery>,
 ) -> Result<Json<ListSpacesResponseDto>, ApiError> {
-    let req = query.to_request();
+    let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.list_spaces(&req).await;
@@ -67,8 +69,9 @@ pub async fn delete(
     State(state): State<EdgeState>,
     headers: HeaderMap,
 ) -> Result<Json<SpaceErasedDto>, ApiError> {
-    let req = delete_space_request();
+    let mut req = delete_space_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.delete_space(&req).await;

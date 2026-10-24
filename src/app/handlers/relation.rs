@@ -23,8 +23,9 @@ pub async fn get(
     Path(id): Path<String>,
     Query(query): Query<GetRelationQuery>,
 ) -> Result<Json<RelationDetailDto>, ApiError> {
-    let req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
+    let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.get_relation(&req).await;
@@ -54,13 +55,15 @@ pub async fn list(
     // into one verb leaves the other a dead end that still looks paginated.
     let (views, next_cursor) = match side {
         RelationSide::From => {
-            let req = query.to_from_request(&id).map_err(ApiError::bad_request)?;
+            let mut req = query.to_from_request(&id).map_err(ApiError::bad_request)?;
+            ident.scope(&mut req);
             let out = client.list_relations_from_frames(&req).await;
             state.record("list_relations", &ident, Outcome::of(&out));
             split_from_frames(out.map_err(|e| ApiError::from_brain(&e))?)
         }
         RelationSide::To => {
-            let req = query.to_to_request(&id).map_err(ApiError::bad_request)?;
+            let mut req = query.to_to_request(&id).map_err(ApiError::bad_request)?;
+            ident.scope(&mut req);
             let out = client.list_relations_to_frames(&req).await;
             state.record("list_relations", &ident, Outcome::of(&out));
             split_to_frames(out.map_err(|e| ApiError::from_brain(&e))?)
@@ -84,8 +87,9 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRelationBody>,
 ) -> Result<(StatusCode, Json<CreateRelationResponseDto>), ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.create_relation(&req).await;
@@ -109,8 +113,9 @@ pub async fn supersede(
     Path(id): Path<String>,
     Json(body): Json<SupersedeRelationBody>,
 ) -> Result<(StatusCode, Json<SupersedeRelationResponseDto>), ApiError> {
-    let req = body.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.supersede_relation(&req).await;
@@ -129,8 +134,9 @@ pub async fn tombstone(
     Path(id): Path<String>,
     Query(query): Query<TombstoneRelationQuery>,
 ) -> Result<Json<TombstoneRelationResponseDto>, ApiError> {
-    let req = query.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.tombstone_relation(&req).await;

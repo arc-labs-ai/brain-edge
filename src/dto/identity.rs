@@ -9,8 +9,10 @@
 #![allow(missing_docs)]
 
 use brain_db_sdk::ConnectionInfo;
-use brain_db_sdk::wire::types::GetCapabilitiesResponse;
+use brain_db_sdk::wire::types::{GetCapabilitiesResponse, SpacePermissions, permissions};
 use serde::Serialize;
+
+use crate::port::ResolvedCredential;
 
 use super::uuid_string;
 
@@ -31,6 +33,38 @@ pub struct PermissionsDto {
     pub can_reason: bool,
     pub can_forget: bool,
     pub can_admin: bool,
+}
+
+impl WhoamiDto {
+    /// Who the caller turned out to be, for the deployment that is serving
+    /// them.
+    ///
+    /// Self-host answers straight from the connection, which *is* the tenant.
+    /// The hosted gateway multiplexes every tenant over one service principal,
+    /// so answering from the connection there would tell a tenant it is the
+    /// gateway — wrong namespace, wrong space, and a permission set far wider
+    /// than it holds. Under `act_as` the identity is the delegated one and the
+    /// permissions are what Brain will actually enforce for it.
+    #[must_use]
+    pub fn for_identity(ident: &ResolvedCredential, connection: &ConnectionInfo) -> Self {
+        let Some(act_as) = ident.act_as.as_ref() else {
+            return Self::from(connection);
+        };
+        let bits = permissions::delegated(connection.permissions.to_bits(), act_as.grant);
+        let p = SpacePermissions::from_bits(bits);
+        Self {
+            namespace: act_as.namespace.clone(),
+            space_id: uuid_string(&ident.space_id(connection)),
+            permissions: PermissionsDto {
+                can_encode: p.can_encode,
+                can_recall: p.can_recall,
+                can_plan: p.can_plan,
+                can_reason: p.can_reason,
+                can_forget: p.can_forget,
+                can_admin: p.can_admin,
+            },
+        }
+    }
 }
 
 impl From<&ConnectionInfo> for WhoamiDto {

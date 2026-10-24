@@ -39,7 +39,9 @@ pub async fn encode(
     if let Some(at) = body.occurred_at_unix_nanos {
         builder = builder.occurred_at(at);
     }
-    let out = client.encode(&builder.build()).await;
+    let mut req = builder.build();
+    ident.scope(&mut req);
+    let out = client.encode(&req).await;
     state.record("encode", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EncodeResponseDto::from(resp)))
@@ -87,13 +89,15 @@ pub async fn recall(
     if traced {
         builder = builder.trace(true);
     }
+    let mut req = builder.build();
+    ident.scope(&mut req);
     if traced {
-        let out = client.recall_frames(&builder.build()).await;
+        let out = client.recall_frames(&req).await;
         state.record("recall", &ident, Outcome::of(&out));
         let frames = out.map_err(|e| ApiError::from_brain(&e))?;
         return Ok(Json(RecallResponseDto::from_frames(frames)));
     }
-    let out = client.recall(&builder.build()).await;
+    let out = client.recall(&req).await;
     state.record("recall", &ident, Outcome::of(&out));
     let answer = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(RecallResponseDto::from(answer)))
@@ -107,8 +111,9 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<MemoryListQuery>,
 ) -> Result<Json<MemoryListPageDto>, ApiError> {
-    let req = query.to_request().map_err(ApiError::bad_request)?;
+    let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.memory_list_frames(&req).await;
@@ -133,7 +138,7 @@ pub async fn inspect(
 
     let req = MemoryInspectRequest {
         memory_id: wire_id,
-        act_as: None,
+        act_as: ident.act_as.clone(),
     };
     let out = client.memory_inspect(&req).await;
     state.record("memory_inspect", &ident, Outcome::of(&out));
@@ -155,7 +160,9 @@ pub async fn forget(
     if body.hard {
         builder = builder.hard();
     }
-    let out = client.forget(&builder.build()).await;
+    let mut req = builder.build();
+    ident.scope(&mut req);
+    let out = client.forget(&req).await;
     state.record("forget", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ForgetResponseDto::from(resp)))
@@ -171,8 +178,9 @@ pub async fn encode_vector(
     headers: HeaderMap,
     Json(body): Json<EncodeVectorBody>,
 ) -> Result<Json<EncodeResponseDto>, ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.encode_vector_direct(&req).await;
@@ -191,8 +199,9 @@ pub async fn materialize_procedural(
     // Optional body: every field is a filter, and asking for `{}` to get the
     // default rendering is friction for no gain.
     let body = body.map_or_else(MaterializeProceduralBody::default, |Json(b)| b);
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.materialize_procedural(&req).await;

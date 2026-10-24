@@ -725,6 +725,7 @@ impl SupersedeStatementBody {
             old_statement_id: parse_uuid(old_id)?,
             new_statement: self.statement.to_request()?,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
@@ -751,6 +752,7 @@ impl StatementRetireQuery {
             reason: self.reason,
             reason_message: self.message.clone().unwrap_or_default(),
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 
@@ -764,6 +766,7 @@ impl StatementRetireQuery {
             reason: self.reason,
             reason_message: self.message.clone().unwrap_or_default(),
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
@@ -882,6 +885,7 @@ impl StatementHistoryQuery {
                 Some(c) => hex_decode(c)?,
                 None => Vec::new(),
             },
+            act_as: None,
         })
     }
 }

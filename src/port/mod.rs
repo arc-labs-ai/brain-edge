@@ -9,10 +9,14 @@
 //! handlers stay non-generic and the host app plugs in behavior at construction.
 
 pub mod file_store;
+pub mod scoped;
 
 pub use file_store::FileLlmCredentialStore;
+pub use scoped::Scoped;
 
 use axum::http::{HeaderMap, header};
+use brain_db_sdk::wire::types::ActAs;
+use brain_db_sdk::{ConnectionInfo, derive_space_id};
 
 use crate::error::ApiError;
 
@@ -27,6 +31,56 @@ pub struct ResolvedCredential {
     /// this from the API key (e.g. `namespace/agent`); the bearer default leaves
     /// it `None` because Brain, not the edge, resolves the identity there.
     pub tenant: Option<String>,
+    /// The identity to run the request as, for a deployment whose Brain
+    /// connection is not the tenant.
+    ///
+    /// `None` — the self-host default — means the connection *is* the tenant
+    /// and Brain reads the identity off it. The hosted gateway authenticates
+    /// one shared service principal for every tenant, so it fills this from
+    /// the API key's scope and Brain resolves the effective namespace and
+    /// space from it instead. See [`scoped`] for why only the resolver may set
+    /// this.
+    pub act_as: Option<ActAs>,
+}
+
+impl ResolvedCredential {
+    /// Stamp this identity onto a request, replacing whatever `act_as` it
+    /// carried.
+    ///
+    /// Unconditional, including when the identity is `None`: a client that put
+    /// an `act_as` in its own body must not keep it, or the hosted gateway
+    /// would let any tenant address any other tenant's space.
+    pub fn scope<R: Scoped>(&self, request: &mut R) {
+        request.set_act_as(self.act_as.clone());
+    }
+
+
+    /// The namespace this request runs in.
+    ///
+    /// A handler that needs the caller's namespace must ask here rather than
+    /// read `connection().namespace`: under the hosted gateway the connection
+    /// is a shared service principal, so its namespace is the gateway's, not
+    /// the tenant's.
+    #[must_use]
+    pub fn namespace<'a>(&'a self, connection: &'a ConnectionInfo) -> &'a str {
+        self.act_as
+            .as_ref()
+            .map_or(connection.namespace.as_str(), |a| a.namespace.as_str())
+    }
+
+    /// The effective space id this request runs in.
+    ///
+    /// Brain derives the storage id from the `act_as` space *string*, so this
+    /// cannot be parsed out of it — [`derive_space_id`] repeats the server's
+    /// own `UUIDv5(UUIDv5(ROOT, namespace), space)`. An empty space string
+    /// means "the principal's own space", matching Brain's check at ingress.
+    #[must_use]
+    pub fn space_id(&self, connection: &ConnectionInfo) -> [u8; 16] {
+        match &self.act_as {
+            Some(a) if !a.space.is_empty() => derive_space_id(&a.namespace, &a.space),
+            _ => connection.space_id,
+        }
+    }
 }
 
 /// Resolve an incoming request to a Brain credential.
@@ -192,6 +246,9 @@ impl CredentialResolver for BearerResolver {
         Ok(ResolvedCredential {
             credential: bearer_token(headers)?,
             tenant: None,
+            // The forwarded token IS the tenant: Brain reads the identity off
+            // the connection, so there is nothing to act as.
+            act_as: None,
         })
     }
 }

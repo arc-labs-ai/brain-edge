@@ -530,7 +530,7 @@ impl From<ExtractorListResponseFrame> for ListExtractorsResponseDto {
 /// type only so the CBOR encoding matches every other request body.
 #[must_use]
 pub fn extractor_list_request() -> ExtractorListRequest {
-    ExtractorListRequest {}
+    ExtractorListRequest { act_as: None }
 }
 
 // --- Drop -------------------------------------------------------------------

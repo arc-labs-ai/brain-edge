@@ -56,6 +56,7 @@ impl CredentialResolver for AcceptingResolver {
         Ok(ResolvedCredential {
             credential: "test-key".into(),
             tenant: Some("acme/prod".into()),
+            act_as: None,
         })
     }
 }

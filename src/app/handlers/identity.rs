@@ -18,7 +18,7 @@ pub async fn whoami(
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
     state.record("whoami", &ident, Outcome::Ok);
-    Ok(Json(WhoamiDto::from(client.connection())))
+    Ok(Json(WhoamiDto::for_identity(&ident, client.connection())))
 }
 
 /// `GET /v1/capabilities` — what the connected shard supports.
@@ -28,9 +28,9 @@ pub async fn capabilities(
 ) -> Result<Json<CapabilitiesDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
-    let out = client
-        .capabilities(&GetCapabilitiesRequest::default())
-        .await;
+    let mut req = GetCapabilitiesRequest::default();
+    ident.scope(&mut req);
+    let out = client.capabilities(&req).await;
     state.record("capabilities", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(CapabilitiesDto::from(resp)))

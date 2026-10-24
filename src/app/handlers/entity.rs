@@ -22,8 +22,9 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateEntityBody>,
 ) -> Result<Json<CreateEntityResponseDto>, ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.create_entity(&req).await;
@@ -38,8 +39,9 @@ pub async fn resolve(
     headers: HeaderMap,
     Json(body): Json<ResolveEntityBody>,
 ) -> Result<Json<ResolveEntityResponseDto>, ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.resolve_entity(&req).await;
@@ -54,8 +56,9 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<ListEntitiesQuery>,
 ) -> Result<Json<ListEntitiesResponseDto>, ApiError> {
-    let req = query.to_request().map_err(ApiError::bad_request)?;
+    let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     // The streamed frames rather than the flattened items: the resume cursor
@@ -73,8 +76,9 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<EntityDetailDto>, ApiError> {
-    let req = get_request_from_id(&id).map_err(ApiError::bad_request)?;
+    let mut req = get_request_from_id(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.get_entity(&req).await;
@@ -91,8 +95,9 @@ pub async fn traverse(
     Path(id): Path<String>,
     Json(body): Json<TraverseBody>,
 ) -> Result<Json<TraverseResponseDto>, ApiError> {
-    let req = body.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.traverse_relations_frames(&req).await;
@@ -113,8 +118,9 @@ pub async fn update(
     Path(id): Path<String>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Result<Json<EntityDetailDto>, ApiError> {
-    let req = body.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.update_entity(&req).await;
@@ -131,8 +137,9 @@ pub async fn rename(
     Path(id): Path<String>,
     Json(body): Json<RenameEntityBody>,
 ) -> Result<Json<EntityDetailDto>, ApiError> {
-    let req = body.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.rename_entity(&req).await;
@@ -153,8 +160,9 @@ pub async fn merge(
     Path(id): Path<String>,
     Json(body): Json<MergeEntityBody>,
 ) -> Result<Json<MergeEntityResponseDto>, ApiError> {
-    let req = body.to_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.merge_entities(&req).await;
@@ -170,8 +178,9 @@ pub async fn unmerge(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<UnmergeEntityResponseDto>, ApiError> {
-    let req = unmerge_request(&id).map_err(ApiError::bad_request)?;
+    let mut req = unmerge_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.unmerge_entity(&req).await;
@@ -190,8 +199,9 @@ pub async fn tombstone(
     Path(id): Path<String>,
     Query(query): Query<TombstoneEntityQuery>,
 ) -> Result<Json<TombstoneEntityResponseDto>, ApiError> {
-    let req = tombstone_request(&id, &query).map_err(ApiError::bad_request)?;
+    let mut req = tombstone_request(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.tombstone_entity(&req).await;

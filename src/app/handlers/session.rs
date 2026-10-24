@@ -23,8 +23,9 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateSessionBody>,
 ) -> Result<(StatusCode, Json<SessionProvisionDto>), ApiError> {
-    let req = body.to_request();
+    let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.create_session(&req).await;
@@ -44,8 +45,9 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<ListSessionsResponseDto>, ApiError> {
-    let req = query.to_request();
+    let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.list_sessions(&req).await;
@@ -64,8 +66,9 @@ pub async fn delete(
     Path(id): Path<u64>,
     Query(query): Query<DeleteSessionQuery>,
 ) -> Result<Json<SessionErasedDto>, ApiError> {
-    let req = delete_session_request(id, &query);
+    let mut req = delete_session_request(id, &query);
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.delete_session(&req).await;

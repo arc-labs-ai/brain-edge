@@ -598,6 +598,7 @@ impl SupersedeRelationBody {
             old_relation_id: parse_uuid(old_id)?,
             new_relation: self.relation.to_request()?,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }
@@ -620,6 +621,7 @@ impl TombstoneRelationQuery {
             relation_id: parse_uuid(id)?,
             reason: self.reason.clone().unwrap_or_default(),
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }

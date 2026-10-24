@@ -21,8 +21,9 @@ pub async fn get(
     headers: HeaderMap,
     Query(query): Query<SchemaGetQuery>,
 ) -> Result<Json<SchemaDto>, ApiError> {
-    let req = query.to_request();
+    let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.get_schema(&req).await;
@@ -40,8 +41,9 @@ pub async fn upload(
     headers: HeaderMap,
     Json(body): Json<SchemaUploadBody>,
 ) -> Result<Json<SchemaUploadDto>, ApiError> {
-    let req = body.to_request();
+    let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.upload_schema(&req).await;
@@ -56,8 +58,9 @@ pub async fn validate(
     headers: HeaderMap,
     Json(body): Json<SchemaValidateBody>,
 ) -> Result<Json<SchemaValidateDto>, ApiError> {
-    let req = body.to_request();
+    let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.validate_schema(&req).await;
@@ -81,8 +84,9 @@ pub async fn replace(
     headers: HeaderMap,
     Json(body): Json<SchemaReplaceBody>,
 ) -> Result<Json<SchemaReplaceDto>, ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.replace_schema(&req).await;
@@ -103,11 +107,13 @@ pub async fn list(
 ) -> Result<Json<ListSchemasResponseDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
-    // The namespace Brain proved from the credential, not one the caller
-    // asked for.
-    let req = query
-        .to_request(&client.connection().namespace)
+    // The namespace the request runs in, not one the caller asked for.
+    // Via `ident`, not `connection()`: under the hosted gateway the connection
+    // is a shared service principal and its namespace is the gateway's.
+    let mut req = query
+        .to_request(ident.namespace(client.connection()))
         .map_err(ApiError::bad_request)?;
+    ident.scope(&mut req);
 
     let out = client.list_schemas_frames(&req).await;
     state.record("list_schemas", &ident, Outcome::of(&out));
@@ -124,8 +130,9 @@ pub async fn extractors(
     State(state): State<EdgeState>,
     headers: HeaderMap,
 ) -> Result<Json<ListExtractorsResponseDto>, ApiError> {
-    let req = extractor_list_request();
+    let mut req = extractor_list_request();
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.extractor_list(&req).await;
@@ -149,9 +156,11 @@ pub async fn drop(
 ) -> Result<Json<SchemaDropResponseDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
-    let req = query
-        .to_request(&client.connection().namespace, &kind, &name)
+    // See `list` for why the namespace comes from `ident`.
+    let mut req = query
+        .to_request(ident.namespace(client.connection()), &kind, &name)
         .map_err(ApiError::bad_request)?;
+    ident.scope(&mut req);
 
     let out = client.drop_schema(&req).await;
     state.record("drop_schema", &ident, Outcome::of(&out));

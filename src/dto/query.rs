@@ -201,6 +201,7 @@ impl QueryBody {
     pub fn to_explain(self) -> Result<QueryExplainRequest, String> {
         Ok(QueryExplainRequest {
             query: self.to_request()?,
+            act_as: None,
         })
     }
 
@@ -211,6 +212,7 @@ impl QueryBody {
     pub fn to_trace(self) -> Result<QueryTraceRequest, String> {
         Ok(QueryTraceRequest {
             query: self.to_request()?,
+            act_as: None,
         })
     }
 }

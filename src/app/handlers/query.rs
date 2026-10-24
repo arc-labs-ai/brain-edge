@@ -21,8 +21,9 @@ pub async fn explain(
     headers: HeaderMap,
     Json(body): Json<QueryBody>,
 ) -> Result<Json<QueryExplainResponseDto>, ApiError> {
-    let req = body.to_explain().map_err(ApiError::bad_request)?;
+    let mut req = body.to_explain().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.query_explain(&req).await;
@@ -38,8 +39,9 @@ pub async fn trace(
     headers: HeaderMap,
     Json(body): Json<QueryBody>,
 ) -> Result<Json<QueryTraceResponseDto>, ApiError> {
-    let req = body.to_trace().map_err(ApiError::bad_request)?;
+    let mut req = body.to_trace().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.query_trace(&req).await;

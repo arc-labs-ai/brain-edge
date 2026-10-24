@@ -15,8 +15,9 @@ pub async fn plan(
     headers: HeaderMap,
     Json(body): Json<PlanBody>,
 ) -> Result<Json<PlanResponseDto>, ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
     let out = client.plan(&req).await;
     state.record("plan", &ident, Outcome::of(&out));
@@ -30,8 +31,9 @@ pub async fn reason(
     headers: HeaderMap,
     Json(body): Json<ReasonBody>,
 ) -> Result<Json<ReasonResponseDto>, ApiError> {
-    let req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
     let out = client.reason(&req).await;
     state.record("reason", &ident, Outcome::of(&out));

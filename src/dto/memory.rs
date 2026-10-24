@@ -979,6 +979,7 @@ impl EncodeVectorBody {
             request_id: brain_db_sdk::new_id(),
             txn_id: None,
             deduplicate: self.deduplicate,
+            act_as: None,
         })
     }
 }
@@ -1024,6 +1025,7 @@ impl MaterializeProceduralBody {
             min_confidence: self.min_confidence,
             categories: self.categories,
             request_id: brain_db_sdk::new_id(),
+            act_as: None,
         })
     }
 }

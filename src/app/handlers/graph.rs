@@ -21,8 +21,9 @@ pub async fn fetch(
     headers: HeaderMap,
     Query(query): Query<GraphFetchQuery>,
 ) -> Result<Json<GraphPageDto>, ApiError> {
-    let req = query.to_request().map_err(ApiError::bad_request)?;
+    let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let out = client.graph_fetch_frames(&req).await;
@@ -48,7 +49,7 @@ pub async fn link(
         weight,
         request_id: new_id(),
         txn_id: None,
-        act_as: None,
+        act_as: ident.act_as.clone(),
     };
     let out = client.link(&req).await;
     state.record("link", &ident, Outcome::of(&out));
@@ -72,7 +73,7 @@ pub async fn unlink(
         kind,
         request_id: new_id(),
         txn_id: None,
-        act_as: None,
+        act_as: ident.act_as.clone(),
     };
     let out = client.unlink(&req).await;
     state.record("unlink", &ident, Outcome::of(&out));
