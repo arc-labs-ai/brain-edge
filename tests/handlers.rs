@@ -28,19 +28,18 @@ use brain_db_sdk::wire::opcode::Opcode;
 use brain_db_sdk::wire::types::{
     AuthOkPayload, AuthPayload, Capabilities, EdgeDirectionWire, EdgeKindWire, EncodeResponse,
     EncodeStageArtifact, EntityCreateResponse, EntityGetResponse, EntityListItem,
-    EntityListResponseFrame, EntityResolveResponse, EntityView, EvidenceRefWire, ForgetResponse,
-    GetCapabilitiesResponse, GraphEdge, GraphFetchResponseFrame, GraphNode, HelloPayload,
-    ErrorCategoryWire, ErrorCodeWire, ErrorResponse, InferenceKind, InferenceStep,
-    LinkResponse, MemoryEdgeWire, MemoryInspectRequest,
-    MemoryInspectResponse,
-    MemoryKindWire, MemoryListItem, MemoryListResponseFrame, MemoryResult, PlanResponseFrame,
-    PlanStatus, PlanStep, ReasonResponseFrame, ReasonStatus, RecallResponseFrame,
-    RelationGetResponse, RelationListFromResponseFrame, RelationListToResponseFrame,
-    RelationTraverseResponseFrame, RelationView, ResolutionOutcomeWire, SchemaGetResponse,
-    SchemaReplaceResponse, SchemaUploadResponse, SchemaValidateResponse, ServerFeatures,
-    SpacePermissions, StatementGetResponse, StatementKindWire, StatementListResponseFrame,
-    StatementObjectWire, StatementValueWire, StatementView, TransitionKind, TraversalPathWire,
-    TraversalStepWire, UnlinkResponse, WelcomePayload,
+    EntityListResponseFrame, EntityResolveResponse, EntityView, ErrorCategoryWire, ErrorCodeWire,
+    ErrorResponse, EvidenceRefWire, ForgetResponse, GetCapabilitiesResponse, GraphEdge,
+    GraphFetchResponseFrame, GraphNode, HelloPayload, InferenceKind, InferenceStep, LinkResponse,
+    MemoryEdgeWire, MemoryInspectRequest, MemoryInspectResponse, MemoryKindWire, MemoryListItem,
+    MemoryListResponseFrame, MemoryResult, PlanResponseFrame, PlanStatus, PlanStep,
+    ReasonResponseFrame, ReasonStatus, RecallResponseFrame, RelationGetResponse,
+    RelationListFromResponseFrame, RelationListToResponseFrame, RelationTraverseResponseFrame,
+    RelationView, ResolutionOutcomeWire, SchemaGetResponse, SchemaReplaceResponse,
+    SchemaUploadResponse, SchemaValidateResponse, ServerFeatures, SpacePermissions,
+    StatementGetResponse, StatementKindWire, StatementListResponseFrame, StatementObjectWire,
+    StatementValueWire, StatementView, TransitionKind, TraversalPathWire, TraversalStepWire,
+    UnlinkResponse, WelcomePayload,
 };
 use brain_edge::port::{CredentialResolver, MeterEvent, MeteringSink, Outcome, ResolvedCredential};
 use brain_edge::{ApiError, EdgeConfig, EdgeState};
@@ -202,7 +201,7 @@ fn sample_traversal_step() -> TraversalStepWire {
 
 fn sample_memory_list_item(tag: u8) -> MemoryListItem {
     MemoryListItem {
-        memory_id: id16(tag),
+        memory_id: u128::from_be_bytes(id16(tag)),
         space_id: [0; 16],
         session_id: 0,
         text: "row".into(),
@@ -545,12 +544,11 @@ async fn dispatch_memory_ops(sock: &mut TcpStream, f: &Frame) {
 async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
     // An id the engine does not have — or that belongs to another tenant,
     // which it reports the same way rather than as forbidden. The edge parses
-    // the path segment as a u128, so "99" arrives as big-endian 99, not as a
-    // filled `id16`.
-    const ABSENT_ID: [u8; 16] = 99u128.to_be_bytes();
+    // the path segment as a u128, so "99" arrives as 99.
+    const ABSENT_ID: u128 = 99;
 
-    let absent = from_cbor_bytes::<MemoryInspectRequest>(&f.payload)
-        .is_ok_and(|r| r.memory_id == ABSENT_ID);
+    let absent =
+        from_cbor_bytes::<MemoryInspectRequest>(&f.payload).is_ok_and(|r| r.memory_id == ABSENT_ID);
     if absent {
         send_frame(
             sock,
@@ -573,10 +571,7 @@ async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
         Opcode::MemoryInspectResp,
         f.stream_id,
         &MemoryInspectResponse {
-            // Pinned-SDK artifact: brain-db-sdk 0.3.0 still declares `found`.
-            // Brain no longer sends it; this goes with the version bump.
-            found: true,
-            memory_id: id16(0x2a),
+            memory_id: u128::from_be_bytes(id16(0x2a)),
             text: "remembered text".into(),
             artifact: EncodeStageArtifact {
                 vector: vec![0.1, 0.2, 0.3],

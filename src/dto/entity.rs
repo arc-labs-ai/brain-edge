@@ -5,11 +5,11 @@
 //! fields, 16-byte entity/relation ids as hyphenated UUID strings.
 
 use brain_db_sdk::wire::types::{
-    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse, EntityListItem,
-    EntityListRequest, EntityMergeRequest, EntityMergeResponse, EntityRenameRequest,
-    EntityResolveRequest, EntityResolveResponse, EntityTombstoneRequest, EntityTombstoneResponse,
-    EntityUnmergeRequest, EntityUnmergeResponse, EntityUpdateRequest, EntityView,
-    RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire,
+    EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse,
+    EntityListRequest, EntityListResponseFrame, EntityMergeRequest, EntityMergeResponse,
+    EntityRenameRequest, EntityResolveRequest, EntityResolveResponse, EntityTombstoneRequest,
+    EntityTombstoneResponse, EntityUnmergeRequest, EntityUnmergeResponse, EntityUpdateRequest,
+    EntityView, RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire,
     TraversalPathWire,
 };
 use serde::{Deserialize, Serialize};
@@ -265,26 +265,36 @@ pub struct ListEntitiesQuery {
     pub include_merged: bool,
     /// Page size; omitted → 100, clamped to `1..=1000`.
     pub limit: Option<u32>,
+    /// Opaque keyset cursor (hex) from a previous page's `next_cursor`. The
+    /// cursor is bound to the filters above, so they must be repeated
+    /// unchanged on every page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 impl ListEntitiesQuery {
-    /// Build the wire request. v1 exposes no cursor pagination, so an empty
-    /// cursor is always sent.
-    pub fn to_request(&self) -> EntityListRequest {
+    /// Build the wire request.
+    ///
+    /// # Errors
+    /// The cursor is not hex.
+    pub fn to_request(&self) -> Result<EntityListRequest, String> {
         let limit = self
             .limit
             .unwrap_or(DEFAULT_LIST_LIMIT)
             .clamp(1, MAX_LIST_LIMIT);
-        EntityListRequest {
+        Ok(EntityListRequest {
             entity_type_id: self.type_id,
             name_prefix: self.prefix.clone(),
             mention_count_min: self.mention_count_min,
             include_tombstoned: self.include_tombstoned,
             include_merged: self.include_merged,
             limit,
-            cursor: Vec::new(),
+            cursor: match self.cursor.as_deref() {
+                Some(c) if !c.is_empty() => hex_decode(c)?,
+                _ => Vec::new(),
+            },
             act_as: None,
-        }
+        })
     }
 }
 
@@ -295,17 +305,32 @@ pub struct ListEntitiesResponseDto {
     pub entities: Vec<EntityDetailDto>,
     /// Number of entities returned.
     pub count: usize,
+    /// Cursor for the next page, omitted when the enumeration is exhausted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 impl ListEntitiesResponseDto {
-    /// Assemble from the flattened `ENTITY_LIST` items.
-    pub fn from_items(items: Vec<EntityListItem>) -> Self {
-        let entities: Vec<EntityDetailDto> = items
+    /// Assemble from the streamed `ENTITY_LIST` frames.
+    pub fn from_frames(frames: Vec<EntityListResponseFrame>) -> Self {
+        // The cursor that matters is the LAST frame's: earlier frames carry
+        // intermediate positions, and resuming from one of those would replay
+        // rows this page already returned.
+        let next_cursor = frames
+            .last()
+            .filter(|f| !f.next_cursor.is_empty())
+            .map(|f| hex_encode(&f.next_cursor));
+        let entities: Vec<EntityDetailDto> = frames
             .into_iter()
+            .flat_map(|f| f.items)
             .map(|item| EntityDetailDto::from(item.entity))
             .collect();
         let count = entities.len();
-        Self { entities, count }
+        Self {
+            entities,
+            count,
+            next_cursor,
+        }
     }
 }
 
@@ -445,7 +470,7 @@ impl TraverseResponseDto {
 #[cfg(test)]
 mod entity_tests {
     use super::*;
-    use brain_db_sdk::wire::types::{TraversalPathWire, TraversalStepWire};
+    use brain_db_sdk::wire::types::{EntityListItem, TraversalPathWire, TraversalStepWire};
 
     #[test]
     fn create_body_rejects_zero_type_and_blank_name() {
@@ -570,11 +595,76 @@ mod entity_tests {
             limit: Some(9999),
             ..Default::default()
         };
-        let req = q.to_request();
+        let req = q.to_request().unwrap();
         assert_eq!(req.limit, MAX_LIST_LIMIT);
         assert_eq!(req.cursor, [] as [u8; 0]);
-        let none = ListEntitiesQuery::default().to_request();
+        let none = ListEntitiesQuery::default().to_request().unwrap();
         assert_eq!(none.limit, DEFAULT_LIST_LIMIT);
+    }
+
+    #[test]
+    fn list_query_carries_the_cursor_and_rejects_junk() {
+        let resumed = ListEntitiesQuery {
+            cursor: Some("2a00ff".into()),
+            ..Default::default()
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(resumed.cursor, vec![0x2a, 0x00, 0xff]);
+
+        // An empty string is "no cursor", not a cursor of zero bytes: a client
+        // that always sends the field would otherwise be rejected on page one.
+        let blank = ListEntitiesQuery {
+            cursor: Some(String::new()),
+            ..Default::default()
+        }
+        .to_request()
+        .unwrap();
+        assert_eq!(blank.cursor, [] as [u8; 0]);
+
+        assert!(
+            ListEntitiesQuery {
+                cursor: Some("zz".into()),
+                ..Default::default()
+            }
+            .to_request()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn list_page_flattens_frames_and_hex_encodes_tail_cursor() {
+        let frame = |tag: u8, cursor: Vec<u8>, is_final: bool| EntityListResponseFrame {
+            items: vec![EntityListItem {
+                entity: EntityView {
+                    entity_id: [tag; 16],
+                    entity_type_id: 1,
+                    canonical_name: "Ada".into(),
+                    normalized_name: "ada".into(),
+                    aliases: vec![],
+                    attributes_blob: vec![],
+                    mention_count: 1,
+                    created_at_unix_nanos: 1,
+                    updated_at_unix_nanos: 2,
+                    merged_into: [0u8; 16],
+                    embedding_version: 1,
+                    flags: 0,
+                },
+            }],
+            next_cursor: cursor,
+            cumulative_count: 1,
+            is_final,
+        };
+        let dto = ListEntitiesResponseDto::from_frames(vec![
+            frame(1, vec![0x01], false),
+            frame(2, vec![0x2a, 0xff], true),
+        ]);
+        assert_eq!(dto.count, 2);
+        // The tail frame's cursor, not the intermediate one.
+        assert_eq!(dto.next_cursor.as_deref(), Some("2aff"));
+
+        let done = ListEntitiesResponseDto::from_frames(vec![frame(3, Vec::new(), true)]);
+        assert!(done.next_cursor.is_none());
     }
 
     #[test]

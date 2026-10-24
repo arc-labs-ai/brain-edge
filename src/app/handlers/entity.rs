@@ -54,14 +54,17 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<ListEntitiesQuery>,
 ) -> Result<Json<ListEntitiesResponseDto>, ApiError> {
-    let req = query.to_request();
+    let req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
 
-    let out = client.list_entities(&req).await;
+    // The streamed frames rather than the flattened items: the resume cursor
+    // only exists on a frame, and without it a page past the first is
+    // unreachable.
+    let out = client.list_entities_frames(&req).await;
     state.record("list_entities", &ident, Outcome::of(&out));
-    let items = out.map_err(|e| ApiError::from_brain(&e))?;
-    Ok(Json(ListEntitiesResponseDto::from_items(items)))
+    let frames = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(ListEntitiesResponseDto::from_frames(frames)))
 }
 
 /// `GET /v1/entities/{id}` — fetch one entity by id.

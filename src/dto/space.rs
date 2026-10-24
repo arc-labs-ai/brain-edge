@@ -89,7 +89,14 @@ pub fn delete_space_request() -> SpaceDeleteRequest {
 
 #[derive(Debug, Serialize)]
 pub struct SpaceProvisionDto {
-    pub space_id: String,
+    /// The human-readable structured space string (e.g.
+    /// `"support-bot:user123"`), NOT the derived 16-byte id.
+    ///
+    /// Named `space`, not `space_id`: `space_id` on this surface already means
+    /// the derived id rendered as a UUID (see `WhoamiDto`), and one name for
+    /// both values is what made the wire protocol's version of this field need
+    /// a doc comment to say which one it was.
+    pub space: String,
     /// Whether THIS call created it. The op is idempotent, so a create for an
     /// existing space succeeds with `false` rather than failing — and a caller
     /// cannot tell the two apart from the rest of the body.
@@ -103,7 +110,7 @@ pub struct SpaceProvisionDto {
 impl From<SpaceCreateResponse> for SpaceProvisionDto {
     fn from(r: SpaceCreateResponse) -> Self {
         Self {
-            space_id: r.space_id,
+            space: r.space,
             created: r.created,
             created_at_unix_nanos: r.created_at_unix_nanos,
             last_active_unix_nanos: r.last_active_unix_nanos,
@@ -115,7 +122,14 @@ impl From<SpaceCreateResponse> for SpaceProvisionDto {
 
 #[derive(Debug, Serialize)]
 pub struct SpaceSummaryDto {
-    pub space_id: String,
+    /// The human-readable structured space string (e.g.
+    /// `"support-bot:user123"`), NOT the derived 16-byte id.
+    ///
+    /// Named `space`, not `space_id`: `space_id` on this surface already means
+    /// the derived id rendered as a UUID (see `WhoamiDto`), and one name for
+    /// both values is what made the wire protocol's version of this field need
+    /// a doc comment to say which one it was.
+    pub space: String,
     pub created_at_unix_nanos: u64,
     pub last_active_unix_nanos: u64,
     pub memory_count: u64,
@@ -140,7 +154,7 @@ impl From<SpaceListResponse> for ListSpacesResponseDto {
                 .spaces
                 .into_iter()
                 .map(|s| SpaceSummaryDto {
-                    space_id: s.space_id,
+                    space: s.space,
                     created_at_unix_nanos: s.created_at_unix_nanos,
                     last_active_unix_nanos: s.last_active_unix_nanos,
                     memory_count: s.memory_count,
@@ -154,7 +168,14 @@ impl From<SpaceListResponse> for ListSpacesResponseDto {
 
 #[derive(Debug, Serialize)]
 pub struct SpaceErasedDto {
-    pub space_id: String,
+    /// The human-readable structured space string (e.g.
+    /// `"support-bot:user123"`), NOT the derived 16-byte id.
+    ///
+    /// Named `space`, not `space_id`: `space_id` on this surface already means
+    /// the derived id rendered as a UUID (see `WhoamiDto`), and one name for
+    /// both values is what made the wire protocol's version of this field need
+    /// a doc comment to say which one it was.
+    pub space: String,
     /// `false` when the space had no registry row — already erased, or never
     /// written to.
     pub existed: bool,
@@ -164,7 +185,7 @@ pub struct SpaceErasedDto {
 impl From<SpaceDeleteResponse> for SpaceErasedDto {
     fn from(r: SpaceDeleteResponse) -> Self {
         Self {
-            space_id: r.space_id,
+            space: r.space,
             existed: r.existed,
             memories_forgotten: r.memories_forgotten,
         }
@@ -177,7 +198,7 @@ mod space_tests {
 
     fn view(id: &str, memories: u64) -> brain_db_sdk::wire::types::SpaceView {
         brain_db_sdk::wire::types::SpaceView {
-            space_id: id.into(),
+            space: id.into(),
             created_at_unix_nanos: 1,
             last_active_unix_nanos: 2,
             memory_count: memories,
@@ -226,7 +247,7 @@ mod space_tests {
     #[test]
     fn provision_reports_which_path_it_took() {
         let made = SpaceProvisionDto::from(SpaceCreateResponse {
-            space_id: "s".into(),
+            space: "s".into(),
             created: true,
             created_at_unix_nanos: 1,
             last_active_unix_nanos: 2,
@@ -236,7 +257,7 @@ mod space_tests {
         assert!(made.created);
 
         let existed = SpaceProvisionDto::from(SpaceCreateResponse {
-            space_id: "s".into(),
+            space: "s".into(),
             created: false,
             created_at_unix_nanos: 1,
             last_active_unix_nanos: 2,
@@ -268,7 +289,7 @@ mod space_tests {
     #[test]
     fn an_erasure_of_nothing_is_reported_as_such() {
         let gone = SpaceErasedDto::from(SpaceDeleteResponse {
-            space_id: "s".into(),
+            space: "s".into(),
             existed: false,
             memories_forgotten: 0,
         });
@@ -279,7 +300,7 @@ mod space_tests {
     #[test]
     fn the_json_field_names_are_the_contract() {
         let json = serde_json::to_value(SpaceProvisionDto::from(SpaceCreateResponse {
-            space_id: "sp".into(),
+            space: "sp".into(),
             created: true,
             created_at_unix_nanos: 11,
             last_active_unix_nanos: 22,
@@ -288,7 +309,10 @@ mod space_tests {
         }))
         .unwrap();
         for key in [
-            "space_id",
+            // , not : the JSON name changed with the wire
+            // name, so this guard is the thing that had to be updated on
+            // purpose rather than a break discovered by a caller.
+            "space",
             "created",
             "created_at_unix_nanos",
             "last_active_unix_nanos",

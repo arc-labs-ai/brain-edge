@@ -7,10 +7,12 @@
 
 use brain_db_sdk::wire::types::{
     EvidenceRefWire, RelationCreateRequest, RelationCreateResponse, RelationGetRequest,
-    RelationListFromRequest, RelationListToRequest, RelationSupersedeRequest,
-    RelationSupersedeResponse, RelationTombstoneRequest, RelationTombstoneResponse, RelationView,
+    RelationListFromRequest, RelationListFromResponseFrame, RelationListToRequest,
+    RelationListToResponseFrame, RelationSupersedeRequest, RelationSupersedeResponse,
+    RelationTombstoneRequest, RelationTombstoneResponse, RelationView, WireUuid,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::{hex_decode, hex_encode, parse_memory_id, parse_uuid, uuid_string};
 
@@ -72,6 +74,33 @@ pub struct RelationDetailDto {
     pub tombstoned_at_unix_nanos: u64,
     /// Whether the relation is tombstoned.
     pub tombstoned: bool,
+
+    // --- resolved display names -------------------------------------------
+    //
+    // Both endpoints are entity ids. Same reason as on a statement: without
+    // the names a client re-queries each endpoint just to label an edge it
+    // already has. The hosted gateway resolved these and a self-hosted edge
+    // did not, so the SDK field was populated against one and null against
+    // the other.
+    /// The `from` endpoint's display name, when it resolves; `null` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_name: Option<String>,
+    /// The `to` endpoint's display name, when it resolves; `null` otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_name: Option<String>,
+}
+
+impl RelationDetailDto {
+    /// Both endpoint ids, for name resolution.
+    pub fn entity_ids(view: &RelationView) -> [WireUuid; 2] {
+        [view.from_entity, view.to_entity]
+    }
+
+    /// Fill the endpoint names from a resolved map.
+    pub fn apply_names(&mut self, view: &RelationView, names: &HashMap<WireUuid, String>) {
+        self.from_name = names.get(&view.from_entity).cloned();
+        self.to_name = names.get(&view.to_entity).cloned();
+    }
 }
 
 impl From<RelationView> for RelationDetailDto {
@@ -94,6 +123,9 @@ impl From<RelationView> for RelationDetailDto {
             extractor_id: v.extractor_id,
             extracted_at_unix_nanos: v.extracted_at_unix_nanos,
             tombstoned_at_unix_nanos: v.tombstoned_at_unix_nanos,
+            // Unresolved here; the handler fills these via `apply_names`.
+            from_name: None,
+            to_name: None,
         }
     }
 }
@@ -147,6 +179,11 @@ pub struct ListRelationsQuery {
     pub include_tombstoned: bool,
     /// Page size; omitted → 100, clamped to `1..=1000`.
     pub limit: Option<u32>,
+    /// Opaque keyset cursor (hex) from a previous page's `next_cursor`. The
+    /// cursor is bound to the direction and filters above, so they must be
+    /// repeated unchanged on every page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 /// The resolved side + limit for a relation-list query.
@@ -170,7 +207,18 @@ impl ListRelationsQuery {
             .clamp(1, MAX_LIST_LIMIT)
     }
 
+    /// The decoded cursor bytes; an absent or empty cursor starts at the top.
+    fn cursor(&self) -> Result<Vec<u8>, String> {
+        match self.cursor.as_deref() {
+            Some(c) if !c.is_empty() => hex_decode(c),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// Build the outgoing (`RELATION_LIST_FROM`) wire request from the path id.
+    ///
+    /// # Errors
+    /// The id is not a UUID, or the cursor is not hex.
     pub fn to_from_request(&self, id: &str) -> Result<RelationListFromRequest, String> {
         Ok(RelationListFromRequest {
             from_entity: parse_uuid(id)?,
@@ -180,12 +228,15 @@ impl ListRelationsQuery {
             include_superseded: self.include_superseded,
             include_tombstoned: self.include_tombstoned,
             limit: self.limit(),
-            cursor: Vec::new(),
+            cursor: self.cursor()?,
             act_as: None,
         })
     }
 
     /// Build the incoming (`RELATION_LIST_TO`) wire request from the path id.
+    ///
+    /// # Errors
+    /// The id is not a UUID, or the cursor is not hex.
     pub fn to_to_request(&self, id: &str) -> Result<RelationListToRequest, String> {
         Ok(RelationListToRequest {
             to_entity: parse_uuid(id)?,
@@ -195,10 +246,46 @@ impl ListRelationsQuery {
             include_superseded: self.include_superseded,
             include_tombstoned: self.include_tombstoned,
             limit: self.limit(),
-            cursor: Vec::new(),
+            cursor: self.cursor()?,
             act_as: None,
         })
     }
+}
+
+/// The resume cursor a relation-list page carries: the LAST frame's,
+/// hex-encoded, or `None` when the enumeration is exhausted. Earlier frames
+/// carry intermediate positions, and resuming from one of those would replay
+/// rows this page already returned.
+fn tail_cursor(last: Option<&[u8]>) -> Option<String> {
+    last.filter(|c| !c.is_empty()).map(hex_encode)
+}
+
+/// Split the streamed `RELATION_LIST_FROM` frames into the flattened views and
+/// the page's resume cursor.
+///
+/// Split rather than folded straight into the DTO because the handler resolves
+/// endpoint display names from the views before it can build one. Written once
+/// per direction because the two verbs stream structurally identical frames
+/// under distinct types.
+pub fn split_from_frames(
+    frames: Vec<RelationListFromResponseFrame>,
+) -> (Vec<RelationView>, Option<String>) {
+    let next_cursor = tail_cursor(frames.last().map(|f| f.next_cursor.as_slice()));
+    (
+        frames.into_iter().flat_map(|f| f.items).collect(),
+        next_cursor,
+    )
+}
+
+/// Split the streamed `RELATION_LIST_TO` frames. See [`split_from_frames`].
+pub fn split_to_frames(
+    frames: Vec<RelationListToResponseFrame>,
+) -> (Vec<RelationView>, Option<String>) {
+    let next_cursor = tail_cursor(frames.last().map(|f| f.next_cursor.as_slice()));
+    (
+        frames.into_iter().flat_map(|f| f.items).collect(),
+        next_cursor,
+    )
 }
 
 /// `GET /v1/entities/{id}/relations` response: a page of relations plus its
@@ -209,15 +296,44 @@ pub struct ListRelationsResponseDto {
     pub relations: Vec<RelationDetailDto>,
     /// Number of relations returned.
     pub count: usize,
+    /// Cursor for the next page, omitted when the enumeration is exhausted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 impl ListRelationsResponseDto {
     /// Assemble from the flattened relation-list views.
-    pub fn from_views(views: Vec<RelationView>) -> Self {
+    pub fn from_views(views: Vec<RelationView>, next_cursor: Option<String>) -> Self {
         let relations: Vec<RelationDetailDto> =
             views.into_iter().map(RelationDetailDto::from).collect();
         let count = relations.len();
-        Self { relations, count }
+        Self {
+            relations,
+            count,
+            next_cursor,
+        }
+    }
+
+    /// Assemble and fill the resolved endpoint names.
+    pub fn from_views_named(
+        views: Vec<RelationView>,
+        names: &HashMap<WireUuid, String>,
+        next_cursor: Option<String>,
+    ) -> Self {
+        let relations: Vec<RelationDetailDto> = views
+            .iter()
+            .map(|v| {
+                let mut dto = RelationDetailDto::from(v.clone());
+                dto.apply_names(v, names);
+                dto
+            })
+            .collect();
+        let count = relations.len();
+        Self {
+            relations,
+            count,
+            next_cursor,
+        }
     }
 }
 
@@ -303,16 +419,58 @@ mod relation_tests {
             include_superseded: true,
             include_tombstoned: false,
             limit: Some(9999),
+            cursor: Some("2a00ff".into()),
         };
         let from = q.to_from_request(id).unwrap();
         assert_eq!(from.from_entity[15], 5);
         assert_eq!(from.relation_type_filter, "brain:knows");
         assert_eq!(from.limit, MAX_LIST_LIMIT);
         assert!(from.include_superseded);
+        assert_eq!(from.cursor, vec![0x2a, 0x00, 0xff]);
 
+        // Both verbs carry the cursor: the handler picks one on `direction`,
+        // and a cursor threaded into only one of them makes the other a dead
+        // end that still looks paginated.
         let to = q.to_to_request(id).unwrap();
         assert_eq!(to.to_entity[15], 5);
+        assert_eq!(to.cursor, vec![0x2a, 0x00, 0xff]);
         assert!(q.to_from_request("bad").is_err());
+
+        let junk = ListRelationsQuery {
+            cursor: Some("zz".into()),
+            ..Default::default()
+        };
+        assert!(junk.to_from_request(id).is_err());
+        assert!(junk.to_to_request(id).is_err());
+    }
+
+    #[test]
+    fn list_frames_split_into_views_and_the_tail_cursor() {
+        let view = sample_view(0);
+        let (views, next) = split_from_frames(vec![
+            RelationListFromResponseFrame {
+                items: vec![view.clone()],
+                next_cursor: vec![0x01],
+                cumulative_count: 1,
+                is_final: false,
+            },
+            RelationListFromResponseFrame {
+                items: vec![view.clone()],
+                next_cursor: vec![0x02],
+                cumulative_count: 2,
+                is_final: true,
+            },
+        ]);
+        assert_eq!(views.len(), 2);
+        assert_eq!(next.as_deref(), Some("02"));
+
+        let (_, exhausted) = split_to_frames(vec![RelationListToResponseFrame {
+            items: vec![view],
+            next_cursor: Vec::new(),
+            cumulative_count: 1,
+            is_final: true,
+        }]);
+        assert!(exhausted.is_none());
     }
 
     #[test]

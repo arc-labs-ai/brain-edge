@@ -125,7 +125,10 @@ mod tests {
 
     fn app() -> Router {
         Router::new()
-            .route("/", post(|body: String| async move { body.len().to_string() }))
+            .route(
+                "/",
+                post(|body: String| async move { body.len().to_string() }),
+            )
             .layer(axum::middleware::from_fn_with_state(CAP, enforce))
     }
 
@@ -182,7 +185,10 @@ mod tests {
         // boundary it stops at is the contract, not an implementation detail.
         let near = CAP * DRAIN_BUDGET_FACTOR;
         let far = near + 1;
-        assert_eq!(post_body(near).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            post_body(near).await.status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
         assert_eq!(post_body(far).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
         // Both refuse; the difference is only whether the body was consumed
         // first, which `oneshot` cannot observe. The sizes are asserted here so

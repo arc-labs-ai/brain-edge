@@ -15,11 +15,12 @@ use brain_db_sdk::wire::types::{
     EncodeVectorDirectRequest, ForgetResponse, MaterializeProceduralRequest,
     MaterializeProceduralResponse, MemoryEdgeWire, MemoryInspectResponse, MemoryKindWire,
     MemoryListDirWire, MemoryListItem, MemoryListRequest, MemoryListSortWire,
-    MemoryListTimeAxisWire, MemoryResult, WireMemoryId,
+    MemoryListTimeAxisWire, MemoryResult, RecallResponseFrame as RecallResponseFrameWire,
+    WireMemoryId,
 };
 use serde::{Deserialize, Serialize};
 
-use super::{hex_decode, hex_encode, mem_id_decimal, parse_memory_id, uuid_string};
+use super::{hex_decode, hex_encode, parse_memory_id, uuid_string};
 
 /// `POST /v1/memories` body.
 #[derive(Debug, Deserialize)]
@@ -29,16 +30,38 @@ pub struct EncodeBody {
     /// Optional session id.
     #[serde(default)]
     pub session: Option<u64>,
-    /// Optional event time (unix nanos).
+    /// Optional event time, unix nanoseconds.
     ///
-    /// `occurred_at_unix_nanos` is the name the rest of the contract uses —
-    /// the read side of this same value is `MemoryListItemDto
-    /// .occurred_at_unix_nanos`, and every other temporal field carries its
-    /// unit. Both spellings are accepted rather than renaming: the short one
-    /// is long-standing public wire, and breaking it to fix a name would cost
-    /// more than the inconsistency does.
-    #[serde(default, alias = "occurred_at_unix_nanos")]
-    pub occurred_at: Option<u64>,
+    /// Spelled with its unit, like every other temporal field on this surface
+    /// and like the read side of this same value
+    /// (`MemoryListItemDto.occurred_at_unix_nanos`).
+    #[serde(default)]
+    pub occurred_at_unix_nanos: Option<u64>,
+    //
+    // NOT IMPLEMENTED ON THIS ROUTE: `wait` / `WaitMode::Derived`.
+    //
+    // A Brain write has two halves. The synchronous half is durable the moment
+    // it acks — that is what `POST /v1/memories` returns. The asynchronous
+    // half is where the embedding, the HyPE questions and the knowledge-graph
+    // extraction happen, and it runs afterwards, taking seconds because it
+    // involves provider round trips.
+    //
+    // The wire protocol lets a caller wait for the second half
+    // (`WaitMode::Derived`), which is what makes read-your-writes possible and
+    // what populates `EncodeResponse.trace`. This route does not expose it, so
+    // over HTTP every write is ack-only. Two consequences a caller will meet:
+    //
+    //   * RECALL right after an encode may not find the memory yet. It is
+    //     durable, but the semantic index becomes searchable a beat later.
+    //     Poll, rather than assuming the write was lost.
+    //   * The write trace is never returned here, because it only exists on a
+    //     derived write.
+    //
+    // Left unimplemented deliberately rather than overlooked. The edge pools
+    // connections, and a derived write holds one for the whole provider round
+    // trip, so exposing it needs a decision about what that does to pool
+    // occupancy and to the request timeout — not just a field. The wire client
+    // (`brain_db_sdk::BrainClient`) has it today for callers who need it.
 }
 
 /// `POST /v1/memories` response.
@@ -65,10 +88,10 @@ impl From<EncodeResponse> for EncodeResponseDto {
     }
 }
 
-/// `POST /v1/recall` body. Accepts `query` or its alias `cue`.
+/// `POST /v1/recall` body.
 #[derive(Debug, Deserialize)]
 pub struct RecallBody {
-    #[serde(alias = "cue")]
+    /// The cue to recall against.
     pub query: String,
     #[serde(default)]
     pub max_results: Option<u32>,
@@ -79,6 +102,22 @@ pub struct RecallBody {
     /// shards and merged). Case-insensitive; anything else is rejected.
     #[serde(default)]
     pub scope: Option<String>,
+    /// Ask for Brain's read-pipeline trace alongside the hits: which
+    /// retrievers ran, what each contributed, how the filter chain narrowed
+    /// the candidates, and where the latency went.
+    ///
+    /// Off by default and free when off — the server only builds the trace
+    /// when the request asks for it. All three SDKs have exposed this
+    /// parameter since they were written; the edge never read it, so it was
+    /// serialized, ignored, and the `trace` field came back null every time.
+    ///
+    /// It is a large response, and the size does NOT follow `max_results`:
+    /// the trace reports every candidate each retriever lane considered, so it
+    /// grows with the space being searched. A three-hit recall over ~700
+    /// memories measures ~121 KB, nearly all of it per-lane candidate lists.
+    /// Fine for debugging one bad answer; not something to leave on.
+    #[serde(default)]
+    pub include_trace: Option<bool>,
 }
 
 /// One recalled memory in the response.
@@ -113,19 +152,63 @@ pub struct RecallResponseDto {
     /// `single` / `many` / `none`.
     pub answer_kind: &'static str,
     pub memories: Vec<MemoryHit>,
+    /// The read-pipeline trace, as a JSON **string**, when `include_trace`
+    /// asked for one. Omitted entirely otherwise, so a caller that did not ask
+    /// sees the response it always saw.
+    ///
+    /// A string rather than a nested object, and that is the contract, not an
+    /// implementation detail: the trace carries 128-bit memory ids, and a
+    /// JSON number cannot hold one — `JSON.parse` in a browser would round it
+    /// and hand back a different id. Every id this API returns is a decimal
+    /// string for the same reason; embedding the trace as a string keeps the
+    /// ids inside it out of a number type on the way through.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<String>,
+}
+
+impl RecallResponseDto {
+    /// Build from the streamed frames, which is what carries the trace: the
+    /// server puts it on the FINAL frame only, and the SDK's aggregating
+    /// `recall()` keeps the memories and drops the frames.
+    pub fn from_frames(frames: Vec<RecallResponseFrameWire>) -> Self {
+        let mut answer_kind = AnswerKindWire::None;
+        let mut memories = Vec::new();
+        let mut trace = None;
+        for frame in frames {
+            answer_kind = frame.answer_kind;
+            memories.extend(frame.memories);
+            if let Some(t) = frame.trace {
+                // A trace that will not serialize is not worth failing the
+                // recall over — the hits are the answer, the trace is
+                // diagnostics. Report it in place of the trace instead.
+                trace = Some(serde_json::to_string(&t).unwrap_or_else(|e| {
+                    format!("{{\"error\":\"trace could not be serialized: {e}\"}}")
+                }));
+            }
+        }
+        Self::build(answer_kind, memories, trace)
+    }
+
+    fn build(
+        answer_kind: AnswerKindWire,
+        memories: Vec<MemoryResult>,
+        trace: Option<String>,
+    ) -> Self {
+        Self {
+            answer_kind: match answer_kind {
+                AnswerKindWire::Single => "single",
+                AnswerKindWire::Many => "many",
+                AnswerKindWire::None => "none",
+            },
+            memories: memories.into_iter().map(MemoryHit::from).collect(),
+            trace,
+        }
+    }
 }
 
 impl From<RecallAnswer> for RecallResponseDto {
     fn from(a: RecallAnswer) -> Self {
-        let answer_kind = match a.answer_kind {
-            AnswerKindWire::Single => "single",
-            AnswerKindWire::Many => "many",
-            AnswerKindWire::None => "none",
-        };
-        Self {
-            answer_kind,
-            memories: a.memories.into_iter().map(MemoryHit::from).collect(),
-        }
+        Self::build(a.answer_kind, a.memories, None)
     }
 }
 
@@ -248,7 +331,7 @@ pub struct MemoryListItemDto {
 impl From<MemoryListItem> for MemoryListItemDto {
     fn from(m: MemoryListItem) -> Self {
         Self {
-            memory_id: mem_id_decimal(&m.memory_id),
+            memory_id: m.memory_id.to_string(),
             text: m.text,
             kind: m.kind,
             state: m.state,
@@ -363,7 +446,7 @@ impl From<MemoryEdgeWire> for MemoryEdgeDto {
 impl From<MemoryInspectResponse> for MemoryInspectDto {
     fn from(r: MemoryInspectResponse) -> Self {
         Self {
-            memory_id: mem_id_decimal(&r.memory_id),
+            memory_id: r.memory_id.to_string(),
             text: r.text,
             artifact: StageArtifactDto::from(r.artifact),
             edges: r.edges.into_iter().map(MemoryEdgeDto::from).collect(),
@@ -419,7 +502,7 @@ pub struct StageRecordDto {
 impl From<EncodeStageRecord> for StageRecordDto {
     fn from(r: EncodeStageRecord) -> Self {
         Self {
-            memory_id: mem_id_decimal(&r.memory_id),
+            memory_id: r.memory_id.to_string(),
             kind: r.kind,
             salience: r.salience,
             created_at_unix_nanos: r.created_at_unix_nanos,
@@ -681,7 +764,7 @@ mod memory_tests {
 
     fn sample_list_item(tag: u8) -> MemoryListItem {
         MemoryListItem {
-            memory_id: [tag; 16],
+            memory_id: u128::from_be_bytes([tag; 16]),
             space_id: [0; 16],
             session_id: 0,
             text: "row".into(),
@@ -735,17 +818,12 @@ mod memory_tests {
     #[test]
     fn inspect_maps_stages_and_hex_encodes_graph_ids() {
         let resp = MemoryInspectResponse {
-            // Present only because this crate is pinned to the published
-            // brain-db-sdk 0.3.0, whose `MemoryInspectResponse` still declares
-            // the field. Brain no longer sends it, and the type drops it in
-            // the next SDK release — this line goes with the version bump.
-            found: true,
-            memory_id: [0; 16],
+            memory_id: 0,
             text: "hello".into(),
             artifact: EncodeStageArtifact {
                 vector: vec![0.1, 0.2],
                 record: Some(EncodeStageRecord {
-                    memory_id: [0; 16],
+                    memory_id: 0,
                     kind: 1,
                     salience: 0.5,
                     created_at_unix_nanos: 1,
@@ -993,15 +1071,17 @@ mod memory_extras_tests {
     }
 
     #[test]
-    fn occurred_at_accepts_both_spellings() {
-        // The read side of this same value is `occurred_at_unix_nanos`, and
-        // every other temporal field carries its unit. Aliased rather than
-        // renamed: the short form is long-standing public wire.
-        let short: EncodeBody = serde_json::from_str(r#"{"text":"x","occurred_at":7}"#).unwrap();
-        let long: EncodeBody =
+    fn occurred_at_has_one_spelling_and_it_carries_its_unit() {
+        // An unrecognised key lands in serde's unknown-field bucket, which this
+        // body ignores, so the time is silently not set. Asserted rather than
+        // assumed: silence is exactly what makes a misspelled field hard to
+        // notice from the caller's side.
+        let named: EncodeBody =
             serde_json::from_str(r#"{"text":"x","occurred_at_unix_nanos":7}"#).unwrap();
-        assert_eq!(short.occurred_at, Some(7));
-        assert_eq!(long.occurred_at, Some(7));
+        assert_eq!(named.occurred_at_unix_nanos, Some(7));
+
+        let short: EncodeBody = serde_json::from_str(r#"{"text":"x","occurred_at":7}"#).unwrap();
+        assert_eq!(short.occurred_at_unix_nanos, None);
     }
 
     #[test]

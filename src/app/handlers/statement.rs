@@ -6,12 +6,13 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Json;
 
+use crate::app::names::entity_names;
 use crate::dto::statement::{
     CreateStatementBody, CreateStatementResponseDto, GetStatementQuery, ListStatementsQuery,
     ListStatementsResponseDto, RetractStatementResponseDto, StatementDetailDto,
     StatementHistoryQuery, StatementHistoryResponseDto, StatementRetireQuery,
     SupersedeStatementBody, SupersedeStatementResponseDto, TombstoneStatementResponseDto,
-    get_request_from,
+    get_request_from, split_list_frames,
 };
 use crate::error::ApiError;
 use crate::port::Outcome;
@@ -31,7 +32,14 @@ pub async fn get(
     let out = client.get_statement(&req).await;
     state.record("get_statement", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
-    Ok(Json(StatementDetailDto::from(resp.statement)))
+
+    // Resolve the subject and object names so a caller does not have to make
+    // a second call per id just to print a label. Best-effort: an id that does
+    // not resolve stays unnamed and the statement is returned regardless.
+    let names = entity_names(&client, StatementDetailDto::entity_ids(&resp.statement)).await;
+    let mut dto = StatementDetailDto::from(resp.statement.clone());
+    dto.apply_names(&resp.statement, &names);
+    Ok(Json(dto))
 }
 
 /// `GET /v1/statements` — enumerate statements in the caller's graph.
@@ -44,10 +52,25 @@ pub async fn list(
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
 
-    let out = client.list_statements(&req).await;
+    // The streamed frames rather than the flattened views: the resume cursor
+    // only exists on a frame, and without it a page past the first is
+    // unreachable.
+    let out = client.list_statements_frames(&req).await;
     state.record("list_statements", &ident, Outcome::of(&out));
-    let views = out.map_err(|e| ApiError::from_brain(&e))?;
-    Ok(Json(ListStatementsResponseDto::from_views(views)))
+    let (views, next_cursor) = split_list_frames(out.map_err(|e| ApiError::from_brain(&e))?);
+
+    // One resolve pass for the whole page: the ids are deduplicated first, so
+    // a page of statements about one subject costs one lookup, not one per row.
+    let names = entity_names(
+        &client,
+        views.iter().flat_map(StatementDetailDto::entity_ids),
+    )
+    .await;
+    Ok(Json(ListStatementsResponseDto::from_views_named(
+        views,
+        &names,
+        next_cursor,
+    )))
 }
 
 /// `POST /v1/statements` — assert a claim (`STATEMENT_CREATE`).

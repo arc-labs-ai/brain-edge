@@ -17,11 +17,13 @@
 use brain_db_sdk::wire::types::{
     EvidenceRefWire, StatementCreateRequest, StatementCreateResponse, StatementGetRequest,
     StatementHistoryRequest, StatementHistoryResponseFrame, StatementKindWire,
-    StatementListRequest, StatementObjectWire, StatementRetractRequest, StatementRetractResponse,
-    StatementSupersedeRequest, StatementSupersedeResponse, StatementTombstoneRequest,
-    StatementTombstoneResponse, StatementValueWire, StatementView,
+    StatementListRequest, StatementListResponseFrame, StatementObjectWire, StatementRetractRequest,
+    StatementRetractResponse, StatementSupersedeRequest, StatementSupersedeResponse,
+    StatementTombstoneRequest, StatementTombstoneResponse, StatementValueWire, StatementView,
+    WireUuid,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::{hex_decode, hex_encode, mem_id_decimal, parse_memory_id, parse_uuid, uuid_string};
 
@@ -203,6 +205,46 @@ pub struct StatementDetailDto {
     pub tombstoned_at_unix_nanos: u64,
     /// The tombstone reason code (`0` = none).
     pub tombstone_reason: u8,
+
+    // --- resolved display names -------------------------------------------
+    //
+    // The subject and object are entity ids. Returning only the ids made every
+    // consumer re-query each one just to print a label — a second call per id,
+    // on a read it already made. The hosted gateway has resolved these since
+    // the dashboard needed them; a self-hosted edge did not, so the same SDK
+    // field was populated against one and null against the other.
+    /// The subject's display name, when it resolves. `null` when the entity
+    /// is gone, unreadable, or past the resolve cap — a name is a convenience
+    /// on top of the id, never a reason to fail the read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_name: Option<String>,
+    /// The object's display name, when the object IS an entity and it
+    /// resolves. Always `null` for a value, memory or statement object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_name: Option<String>,
+}
+
+impl StatementDetailDto {
+    /// The entity ids this statement references, for name resolution.
+    ///
+    /// The subject always; the object only when it is an entity reference —
+    /// a value, a memory or another statement has no entity name to carry.
+    pub fn entity_ids(view: &StatementView) -> impl Iterator<Item = WireUuid> + use<> {
+        let object = match view.object {
+            StatementObjectWire::EntityRef(id) => Some(id),
+            _ => None,
+        };
+        std::iter::once(view.subject).chain(object)
+    }
+
+    /// Fill the display names from a resolved map, leaving unresolved ids
+    /// `null`.
+    pub fn apply_names(&mut self, view: &StatementView, names: &HashMap<WireUuid, String>) {
+        self.subject_name = names.get(&view.subject).cloned();
+        if let StatementObjectWire::EntityRef(id) = view.object {
+            self.object_name = names.get(&id).cloned();
+        }
+    }
 }
 
 impl From<StatementView> for StatementDetailDto {
@@ -227,6 +269,10 @@ impl From<StatementView> for StatementDetailDto {
             schema_version: v.schema_version,
             tombstoned_at_unix_nanos: v.tombstoned_at_unix_nanos,
             tombstone_reason: v.tombstone_reason,
+            // Unresolved here: `From` has only the view, and resolving a name
+            // is an engine call. The handler fills these via `apply_names`.
+            subject_name: None,
+            object_name: None,
         }
     }
 }
@@ -280,11 +326,16 @@ pub struct ListStatementsQuery {
     pub include_tombstoned: bool,
     /// Page size; omitted → 100, clamped to `1..=1000`.
     pub limit: Option<u32>,
+    /// Opaque keyset cursor (hex) from a previous page's `next_cursor`. The
+    /// cursor is bound to the filters above, so they must be repeated
+    /// unchanged on every page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 impl ListStatementsQuery {
     /// Build the wire request. `None` filters map to the wire's "no filter"
-    /// sentinels (`[0;16]` subject, `0` kind byte); v1 has no cursor pagination.
+    /// sentinels (`[0;16]` subject, `0` kind byte).
     pub fn to_request(&self) -> Result<StatementListRequest, String> {
         let subject = match &self.subject {
             Some(s) if !s.trim().is_empty() => parse_uuid(s)?,
@@ -308,10 +359,33 @@ impl ListStatementsQuery {
             only_current: self.only_current,
             include_tombstoned: self.include_tombstoned,
             limit,
-            cursor: Vec::new(),
+            cursor: match self.cursor.as_deref() {
+                Some(c) if !c.is_empty() => hex_decode(c)?,
+                _ => Vec::new(),
+            },
             act_as: None,
         })
     }
+}
+
+/// Split the streamed `STATEMENT_LIST` frames into the flattened views and the
+/// page's resume cursor.
+///
+/// Split rather than folded straight into the DTO because the handler resolves
+/// entity display names from the views before it can build one. The cursor is
+/// the LAST frame's: earlier frames carry intermediate positions, and resuming
+/// from one of those would replay rows this page already returned.
+pub fn split_list_frames(
+    frames: Vec<StatementListResponseFrame>,
+) -> (Vec<StatementView>, Option<String>) {
+    let next_cursor = frames
+        .last()
+        .filter(|f| !f.next_cursor.is_empty())
+        .map(|f| hex_encode(&f.next_cursor));
+    (
+        frames.into_iter().flat_map(|f| f.items).collect(),
+        next_cursor,
+    )
 }
 
 /// `GET /v1/statements` response: a page of statements plus its count.
@@ -321,15 +395,48 @@ pub struct ListStatementsResponseDto {
     pub statements: Vec<StatementDetailDto>,
     /// Number of statements returned.
     pub count: usize,
+    /// Cursor for the next page, omitted when the enumeration is exhausted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 impl ListStatementsResponseDto {
     /// Assemble from the flattened `STATEMENT_LIST` views.
-    pub fn from_views(views: Vec<StatementView>) -> Self {
+    pub fn from_views(views: Vec<StatementView>, next_cursor: Option<String>) -> Self {
         let statements: Vec<StatementDetailDto> =
             views.into_iter().map(StatementDetailDto::from).collect();
         let count = statements.len();
-        Self { statements, count }
+        Self {
+            statements,
+            count,
+            next_cursor,
+        }
+    }
+
+    /// Assemble and fill the resolved display names.
+    ///
+    /// Takes the views rather than mutating afterwards from the DTOs, because
+    /// the DTO renders ids as UUID strings and re-parsing them to look up a
+    /// name would be converting a value back into the thing it came from.
+    pub fn from_views_named(
+        views: Vec<StatementView>,
+        names: &HashMap<WireUuid, String>,
+        next_cursor: Option<String>,
+    ) -> Self {
+        let statements: Vec<StatementDetailDto> = views
+            .iter()
+            .map(|v| {
+                let mut dto = StatementDetailDto::from(v.clone());
+                dto.apply_names(v, names);
+                dto
+            })
+            .collect();
+        let count = statements.len();
+        Self {
+            statements,
+            count,
+            next_cursor,
+        }
     }
 }
 
@@ -347,6 +454,7 @@ mod statement_tests {
             only_current: true,
             include_tombstoned: false,
             limit: None,
+            cursor: None,
         };
         let req = none.to_request().unwrap();
         assert_eq!(req.subject, [0u8; 16]);
@@ -362,6 +470,7 @@ mod statement_tests {
             only_current: false,
             include_tombstoned: true,
             limit: Some(9999),
+            cursor: Some("2a00ff".into()),
         };
         let req = with.to_request().unwrap();
         assert_eq!(req.subject[15], 7);
@@ -369,6 +478,24 @@ mod statement_tests {
         assert_eq!(req.limit, MAX_LIST_LIMIT);
         assert!(!req.only_current);
         assert!(req.include_tombstoned);
+        assert_eq!(req.cursor, vec![0x2a, 0x00, 0xff]); // hex-decoded
+
+        // A malformed cursor is rejected rather than silently restarting the
+        // enumeration from the top.
+        assert!(
+            ListStatementsQuery {
+                subject: None,
+                predicate: String::new(),
+                kind: None,
+                min_confidence: 0.0,
+                only_current: true,
+                include_tombstoned: false,
+                limit: None,
+                cursor: Some("zz".into()),
+            }
+            .to_request()
+            .is_err()
+        );
     }
 
     #[test]
@@ -382,6 +509,7 @@ mod statement_tests {
                 only_current: true,
                 include_tombstoned: false,
                 limit: None,
+                cursor: None,
             }
             .to_request()
             .is_err()
@@ -395,6 +523,7 @@ mod statement_tests {
                 only_current: true,
                 include_tombstoned: false,
                 limit: None,
+                cursor: None,
             }
             .to_request()
             .is_err()
@@ -1021,5 +1150,48 @@ mod statement_authoring_tests {
         let page = StatementHistoryResponseDto::from_frames(vec![]);
         assert!(page.next_cursor.is_none());
         assert!(page.items.is_empty());
+    }
+
+    #[test]
+    fn list_frames_split_into_views_and_the_tail_cursor() {
+        let view = StatementView {
+            statement_id: [1u8; 16],
+            kind: StatementKindWire::Fact,
+            subject: [2u8; 16],
+            subject_pending_audit_id: [0u8; 16],
+            predicate: "p".into(),
+            object: StatementObjectWire::Value(StatementValueWire::Bool(true)),
+            confidence: 1.0,
+            evidence: EvidenceRefWire::Inline(vec![]),
+            extractor_id: 0,
+            extracted_at_unix_nanos: 0,
+            schema_version: 0,
+            valid_from_unix_nanos: 0,
+            valid_to_unix_nanos: 0,
+            event_at_unix_nanos: 0,
+            version: 1,
+            superseded_by: [0u8; 16],
+            supersedes: [0u8; 16],
+            chain_root: [9u8; 16],
+            tombstoned: false,
+            tombstoned_at_unix_nanos: 0,
+            tombstone_reason: 0,
+            flags: 0,
+            is_stateful: false,
+        };
+        let frame = |cursor: Vec<u8>, is_final: bool| StatementListResponseFrame {
+            items: vec![view.clone()],
+            next_cursor: cursor,
+            cumulative_count: 1,
+            is_final,
+        };
+        let (views, next) =
+            split_list_frames(vec![frame(vec![0x01], false), frame(vec![0x02], true)]);
+        assert_eq!(views.len(), 2);
+        // An earlier frame's cursor would replay rows this page returned.
+        assert_eq!(next.as_deref(), Some("02"));
+
+        let (_, exhausted) = split_list_frames(vec![frame(Vec::new(), true)]);
+        assert!(exhausted.is_none());
     }
 }

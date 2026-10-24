@@ -28,11 +28,15 @@ pub async fn encode(
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
 
+    // Ack-only: no `.wait(WaitMode::Derived)`. The HTTP surface has no `wait`
+    // field, so the async half of the write (embedding, HyPE, extraction) runs
+    // after this returns. See the note on `EncodeBody` for why, and for what a
+    // caller has to do about read-your-writes.
     let mut builder = EncodeBuilder::new(body.text);
     if let Some(sess) = body.session {
         builder = builder.session(sess);
     }
-    if let Some(at) = body.occurred_at {
+    if let Some(at) = body.occurred_at_unix_nanos {
         builder = builder.occurred_at(at);
     }
     let out = client.encode(&builder.build()).await;
@@ -75,6 +79,20 @@ pub async fn recall(
         };
         builder = builder.scope(scope);
     }
+    // `recall_frames`, not `recall`, when a trace was asked for: the server
+    // puts the trace on the FINAL frame, and the aggregating `recall()` keeps
+    // the memories and drops the frames it read them from. Without the trace
+    // the aggregate is the cheaper call and stays the default path.
+    let traced = body.include_trace.unwrap_or(false);
+    if traced {
+        builder = builder.trace(true);
+    }
+    if traced {
+        let out = client.recall_frames(&builder.build()).await;
+        state.record("recall", &ident, Outcome::of(&out));
+        let frames = out.map_err(|e| ApiError::from_brain(&e))?;
+        return Ok(Json(RecallResponseDto::from_frames(frames)));
+    }
     let out = client.recall(&builder.build()).await;
     state.record("recall", &ident, Outcome::of(&out));
     let answer = out.map_err(|e| ApiError::from_brain(&e))?;
@@ -114,7 +132,7 @@ pub async fn inspect(
     let client = state.client_for(&ident.credential).await?;
 
     let req = MemoryInspectRequest {
-        memory_id: wire_id.to_be_bytes(),
+        memory_id: wire_id,
         act_as: None,
     };
     let out = client.memory_inspect(&req).await;

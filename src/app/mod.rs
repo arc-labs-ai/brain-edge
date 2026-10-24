@@ -2,6 +2,7 @@
 
 pub mod handlers;
 pub mod middleware;
+pub mod names;
 
 use axum::Router;
 use axum::routing::get;
