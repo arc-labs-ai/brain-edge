@@ -1,6 +1,8 @@
 //! Relation handlers: get / list, and the authoring half — create /
 //! supersede / tombstone.
 
+use std::time::Instant;
+
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
@@ -28,8 +30,9 @@ pub async fn get(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.get_relation(&req).await;
-    state.record("get_relation", &ident, Outcome::of(&out));
+    state.record("get_relation", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
 
     let names = entity_names(&client, RelationDetailDto::entity_ids(&resp.relation)).await;
@@ -57,15 +60,17 @@ pub async fn list(
         RelationSide::From => {
             let mut req = query.to_from_request(&id).map_err(ApiError::bad_request)?;
             ident.scope(&mut req);
+            let started = Instant::now();
             let out = client.list_relations_from_frames(&req).await;
-            state.record("list_relations", &ident, Outcome::of(&out));
+            state.record("list_relations", &ident, Outcome::of(&out), started.elapsed());
             split_from_frames(out.map_err(|e| ApiError::from_brain(&e))?)
         }
         RelationSide::To => {
             let mut req = query.to_to_request(&id).map_err(ApiError::bad_request)?;
             ident.scope(&mut req);
+            let started = Instant::now();
             let out = client.list_relations_to_frames(&req).await;
-            state.record("list_relations", &ident, Outcome::of(&out));
+            state.record("list_relations", &ident, Outcome::of(&out), started.elapsed());
             split_to_frames(out.map_err(|e| ApiError::from_brain(&e))?)
         }
     };
@@ -92,8 +97,9 @@ pub async fn create(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.create_relation(&req).await;
-    state.record("create_relation", &ident, Outcome::of(&out));
+    state.record("create_relation", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok((
         StatusCode::CREATED,
@@ -118,8 +124,9 @@ pub async fn supersede(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.supersede_relation(&req).await;
-    state.record("supersede_relation", &ident, Outcome::of(&out));
+    state.record("supersede_relation", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok((
         StatusCode::CREATED,
@@ -139,8 +146,9 @@ pub async fn tombstone(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.tombstone_relation(&req).await;
-    state.record("tombstone_relation", &ident, Outcome::of(&out));
+    state.record("tombstone_relation", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TombstoneRelationResponseDto::from(resp)))
 }

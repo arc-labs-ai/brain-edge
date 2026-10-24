@@ -5,6 +5,8 @@
 //! Two verbs rather than one with a flag, because the difference is whether
 //! work is done.
 
+use std::time::Instant;
+
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
@@ -26,8 +28,9 @@ pub async fn explain(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.query_explain(&req).await;
-    state.record("query_explain", &ident, Outcome::of(&out));
+    state.record("query_explain", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(QueryExplainResponseDto::from(resp)))
 }
@@ -44,8 +47,9 @@ pub async fn trace(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.query_trace(&req).await;
-    state.record("query_trace", &ident, Outcome::of(&out));
+    state.record("query_trace", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(QueryTraceResponseDto::from(resp)))
 }

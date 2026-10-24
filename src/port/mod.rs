@@ -14,6 +14,8 @@ pub mod scoped;
 pub use file_store::FileLlmCredentialStore;
 pub use scoped::Scoped;
 
+use std::time::Duration;
+
 use axum::http::{HeaderMap, header};
 use brain_db_sdk::wire::types::ActAs;
 use brain_db_sdk::{ConnectionInfo, derive_space_id};
@@ -111,15 +113,57 @@ impl Outcome {
     }
 }
 
-/// One metered event: which tenant ran which op, and whether it succeeded.
+/// Signals a RECALL carried back, for a sink that reports answer quality
+/// rather than just call counts.
+///
+/// Separate from the universal fields because only one verb produces them and
+/// a sink that does not care should not pay for an `Option` on every op.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RecallSignals {
+    /// Memories returned.
+    pub returned_n: u32,
+    /// Confidence of the top answer.
+    pub confidence: f32,
+    /// Whether the answer was grounded in retrieved memories.
+    pub grounded: bool,
+    /// Candidates the semantic lane contributed before fusion.
+    pub semantic_candidates: u32,
+    /// Candidates the lexical lane contributed before fusion.
+    pub lexical_candidates: u32,
+    /// Candidates the graph lane contributed before fusion.
+    pub graph_candidates: u32,
+    /// Candidates dropped for being stale — a suppressed wrong answer, which
+    /// is the one signal here that reports something that did *not* happen.
+    pub stale_prevented: u32,
+}
+
+/// One metered event: who ran which op, how it went, and how long it took.
+///
+/// Deliberately does **not** carry [`ResolvedCredential::credential`]. That is
+/// the Brain wire token; a usage sink has no business seeing it, and passing
+/// the whole credential would hand it to every implementation by default.
 #[derive(Debug)]
 pub struct MeterEvent<'a> {
     /// The resolved tenant label, if the resolver knew it.
     pub tenant: Option<&'a str>,
+    /// The identity the op ran as, for a deployment that carries one. Gives a
+    /// sink the effective namespace and space; `None` means the op ran as the
+    /// connection itself, which the sink already knows.
+    pub act_as: Option<&'a ActAs>,
     /// The verb name (`"encode"`, `"recall"`, …).
     pub op: &'a str,
     /// Success or failure.
     pub outcome: Outcome,
+    /// Engine round-trip time — the Brain call only, not the HTTP request.
+    /// A host that wants end-to-end latency measures that at its own edge.
+    ///
+    /// `None` where there is nothing to time: an op answered without touching
+    /// Brain, or the wire proxy, which splices frames without pairing request
+    /// to response. Deliberately not `Duration::ZERO` — a sink averaging these
+    /// would silently pull its own numbers down.
+    pub latency: Option<Duration>,
+    /// Set only for RECALL.
+    pub recall: Option<RecallSignals>,
 }
 
 /// Record usage. Called once per data-plane op; implementations must not block
@@ -127,6 +171,22 @@ pub struct MeterEvent<'a> {
 pub trait MeteringSink: Send + Sync + 'static {
     /// Record one operation's outcome.
     fn record(&self, event: &MeterEvent<'_>);
+
+    /// Whether RECALL should ask Brain for its read-pipeline trace even when
+    /// the caller did not.
+    ///
+    /// The trace is what [`MeterEvent::recall`]'s candidate and
+    /// stale-prevented counts are derived from, so a sink that reports answer
+    /// quality needs it on every call rather than only when a client opts in.
+    /// It is not free — Brain computes it and it rides the wire — so this is
+    /// off by default and self-host pays nothing. A hosted deployment that
+    /// feeds an analytics pipeline turns it on.
+    ///
+    /// Turning it on does not put the trace in the HTTP response; that still
+    /// follows the request's own `include_trace`.
+    fn wants_recall_trace(&self) -> bool {
+        false
+    }
 }
 
 /// A tenant's stored LLM provider credential, as it is persisted.

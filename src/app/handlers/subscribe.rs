@@ -40,6 +40,8 @@
 //! Together with per-event `id:`/`Last-Event-ID` resumption, a dropped feed
 //! resumes exactly rather than guessing.
 
+use std::time::Instant;
+
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -135,8 +137,9 @@ pub async fn subscribe(
         .map_err(ApiError::bad_request)?;
     ident.scope(&mut req);
 
+    let started = Instant::now();
     let out = client.subscribe(&req).await;
-    state.record("subscribe", &ident, Outcome::of(&out));
+    state.record("subscribe", &ident, Outcome::of(&out), started.elapsed());
     let mut subscription = out.map_err(|e| ApiError::from_brain(&e))?;
 
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(CHANNEL_DEPTH);

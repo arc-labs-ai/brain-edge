@@ -1,9 +1,14 @@
 //! Memory verb handlers: encode / recall / forget.
 
+use std::time::Instant;
+
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
-use brain_db_sdk::wire::types::{MemoryInspectRequest, RecallScopeWire};
+use brain_db_sdk::wire::types::{
+    AnswerKindWire, MemoryInspectRequest, RecallResponseFrame as RecallResponseFrameWire,
+    RecallScopeWire, RetrieverNameWire,
+};
 use brain_db_sdk::{EncodeBuilder, ForgetBuilder, RecallBuilder};
 
 use crate::dto::memory::{
@@ -13,7 +18,7 @@ use crate::dto::memory::{
 };
 use crate::dto::parse_memory_id;
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Outcome, RecallSignals};
 use crate::state::EdgeState;
 
 /// `POST /v1/memories` — store a memory.
@@ -41,8 +46,9 @@ pub async fn encode(
     }
     let mut req = builder.build();
     ident.scope(&mut req);
+    let started = Instant::now();
     let out = client.encode(&req).await;
-    state.record("encode", &ident, Outcome::of(&out));
+    state.record("encode", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EncodeResponseDto::from(resp)))
 }
@@ -85,20 +91,34 @@ pub async fn recall(
     // puts the trace on the FINAL frame, and the aggregating `recall()` keeps
     // the memories and drops the frames it read them from. Without the trace
     // the aggregate is the cheaper call and stays the default path.
-    let traced = body.include_trace.unwrap_or(false);
+    //
+    // Two independent reasons to ask for one, and they are not the same
+    // question. The caller wants it in the response; the deployment's metering
+    // sink wants the counts derived from it on every recall. Only the first
+    // puts the blob in the body.
+    let in_response = body.include_trace.unwrap_or(false);
+    let traced = in_response || state.wants_recall_trace();
     if traced {
         builder = builder.trace(true);
     }
     let mut req = builder.build();
     ident.scope(&mut req);
     if traced {
+        let started = Instant::now();
         let out = client.recall_frames(&req).await;
-        state.record("recall", &ident, Outcome::of(&out));
+        let latency = started.elapsed();
+        let signals = out.as_ref().ok().map(|f| recall_signals(f));
+        state.record_recall("recall", &ident, Outcome::of(&out), Some(latency), signals);
         let frames = out.map_err(|e| ApiError::from_brain(&e))?;
-        return Ok(Json(RecallResponseDto::from_frames(frames)));
+        return Ok(Json(if in_response {
+            RecallResponseDto::from_frames(frames)
+        } else {
+            RecallResponseDto::from_frames_untraced(frames)
+        }));
     }
+    let started = Instant::now();
     let out = client.recall(&req).await;
-    state.record("recall", &ident, Outcome::of(&out));
+    state.record("recall", &ident, Outcome::of(&out), started.elapsed());
     let answer = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(RecallResponseDto::from(answer)))
 }
@@ -116,8 +136,9 @@ pub async fn list(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.memory_list_frames(&req).await;
-    state.record("memory_list", &ident, Outcome::of(&out));
+    state.record("memory_list", &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MemoryListPageDto::from_frames(frames)))
 }
@@ -140,8 +161,9 @@ pub async fn inspect(
         memory_id: wire_id,
         act_as: ident.act_as.clone(),
     };
+    let started = Instant::now();
     let out = client.memory_inspect(&req).await;
-    state.record("memory_inspect", &ident, Outcome::of(&out));
+    state.record("memory_inspect", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MemoryInspectDto::from(resp)))
 }
@@ -162,8 +184,9 @@ pub async fn forget(
     }
     let mut req = builder.build();
     ident.scope(&mut req);
+    let started = Instant::now();
     let out = client.forget(&req).await;
-    state.record("forget", &ident, Outcome::of(&out));
+    state.record("forget", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ForgetResponseDto::from(resp)))
 }
@@ -183,8 +206,9 @@ pub async fn encode_vector(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.encode_vector_direct(&req).await;
-    state.record("encode_vector_direct", &ident, Outcome::of(&out));
+    state.record("encode_vector_direct", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EncodeResponseDto::from(resp)))
 }
@@ -204,8 +228,53 @@ pub async fn materialize_procedural(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.materialize_procedural(&req).await;
-    state.record("materialize_procedural", &ident, Outcome::of(&out));
+    state.record("materialize_procedural", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MaterializeProceduralResponseDto::from(resp)))
+}
+
+/// Derive the metering sink's answer-quality signals from a recall's frames.
+///
+/// Reads the typed trace rather than the serialized blob: the sink only ever
+/// receives these derived counts, never the trace itself. `stale_prevented` is
+/// the one number here that reports something that did *not* happen — the
+/// candidates the supersession filter removed, i.e. wrong answers the read
+/// pipeline suppressed.
+fn recall_signals(frames: &[RecallResponseFrameWire]) -> RecallSignals {
+    let returned_n = frames.iter().map(|f| f.memories.len()).sum::<usize>();
+    let confidence = frames
+        .iter()
+        .flat_map(|f| f.memories.iter())
+        .map(|m| m.confidence)
+        .fold(0.0_f32, f32::max);
+    let answer_kind = frames.last().map_or(AnswerKindWire::None, |f| f.answer_kind);
+    let Some(trace) = frames.iter().rev().find_map(|f| f.trace.as_ref()) else {
+        return RecallSignals {
+            returned_n: u32::try_from(returned_n).unwrap_or(u32::MAX),
+            confidence,
+            grounded: answer_kind != AnswerKindWire::None && returned_n > 0,
+            ..RecallSignals::default()
+        };
+    };
+    let lane = |name: RetrieverNameWire| {
+        trace
+            .retrievers
+            .iter()
+            .find(|r| r.name == name)
+            .map_or(0, |r| r.candidate_count)
+    };
+    RecallSignals {
+        returned_n: u32::try_from(returned_n).unwrap_or(u32::MAX),
+        confidence,
+        grounded: answer_kind != AnswerKindWire::None && returned_n > 0,
+        semantic_candidates: lane(RetrieverNameWire::Semantic),
+        lexical_candidates: lane(RetrieverNameWire::Lexical),
+        graph_candidates: lane(RetrieverNameWire::Graph),
+        stale_prevented: trace
+            .filter_chain
+            .before
+            .saturating_sub(trace.filter_chain.after_supersession),
+    }
 }

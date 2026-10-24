@@ -1,6 +1,8 @@
 //! Entity-graph handlers: create / resolve / get / list / traverse, and the
 //! authoring half — update / rename / merge / unmerge / tombstone.
 
+use std::time::Instant;
+
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
@@ -27,8 +29,9 @@ pub async fn create(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.create_entity(&req).await;
-    state.record("create_entity", &ident, Outcome::of(&out));
+    state.record("create_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(CreateEntityResponseDto::from(resp)))
 }
@@ -44,8 +47,9 @@ pub async fn resolve(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.resolve_entity(&req).await;
-    state.record("resolve_entity", &ident, Outcome::of(&out));
+    state.record("resolve_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ResolveEntityResponseDto::from(resp)))
 }
@@ -64,8 +68,9 @@ pub async fn list(
     // The streamed frames rather than the flattened items: the resume cursor
     // only exists on a frame, and without it a page past the first is
     // unreachable.
+    let started = Instant::now();
     let out = client.list_entities_frames(&req).await;
-    state.record("list_entities", &ident, Outcome::of(&out));
+    state.record("list_entities", &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListEntitiesResponseDto::from_frames(frames)))
 }
@@ -81,8 +86,9 @@ pub async fn get(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.get_entity(&req).await;
-    state.record("get_entity", &ident, Outcome::of(&out));
+    state.record("get_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EntityDetailDto::from_get_response(resp)))
 }
@@ -100,8 +106,9 @@ pub async fn traverse(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.traverse_relations_frames(&req).await;
-    state.record("traverse", &ident, Outcome::of(&out));
+    state.record("traverse", &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TraverseResponseDto::from_frames(frames)))
 }
@@ -123,8 +130,9 @@ pub async fn update(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.update_entity(&req).await;
-    state.record("update_entity", &ident, Outcome::of(&out));
+    state.record("update_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EntityDetailDto::from(resp.entity)))
 }
@@ -142,8 +150,9 @@ pub async fn rename(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.rename_entity(&req).await;
-    state.record("rename_entity", &ident, Outcome::of(&out));
+    state.record("rename_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EntityDetailDto::from(resp.entity)))
 }
@@ -165,8 +174,9 @@ pub async fn merge(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.merge_entities(&req).await;
-    state.record("merge_entities", &ident, Outcome::of(&out));
+    state.record("merge_entities", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MergeEntityResponseDto::from(resp)))
 }
@@ -183,8 +193,9 @@ pub async fn unmerge(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.unmerge_entity(&req).await;
-    state.record("unmerge_entity", &ident, Outcome::of(&out));
+    state.record("unmerge_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(UnmergeEntityResponseDto::from(resp)))
 }
@@ -204,8 +215,9 @@ pub async fn tombstone(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.tombstone_entity(&req).await;
-    state.record("tombstone_entity", &ident, Outcome::of(&out));
+    state.record("tombstone_entity", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TombstoneEntityResponseDto::from(resp)))
 }

@@ -23,6 +23,7 @@
 //! resolver runs before any connection is opened, so a rejecting resolver
 //! short-circuits every route without one.
 
+use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
@@ -653,8 +654,8 @@ async fn a_resolved_tenant_reaches_the_sink() {
         .resolve(&HeaderMap::new())
         .await
         .expect("resolver accepts");
-    state.record("encode", &ident, Outcome::Ok);
-    state.record("recall", &ident, Outcome::Err);
+    state.record("encode", &ident, Outcome::Ok, Duration::from_millis(7));
+    state.record("recall", &ident, Outcome::Err, Duration::from_millis(3));
 
     assert_eq!(
         meter.events(),
@@ -684,5 +685,5 @@ async fn the_self_host_default_meters_nothing_and_forwards_the_bearer() {
     );
 
     // No panic, no state: the default sink is a no-op by construction.
-    state.record("encode", &ident, Outcome::Ok);
+    state.record("encode", &ident, Outcome::Ok, Duration::from_millis(1));
 }

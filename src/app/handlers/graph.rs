@@ -1,5 +1,7 @@
 //! Memory-graph edge handlers: link / unlink.
 
+use std::time::Instant;
+
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
@@ -26,8 +28,9 @@ pub async fn fetch(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.graph_fetch_frames(&req).await;
-    state.record("graph_fetch", &ident, Outcome::of(&out));
+    state.record("graph_fetch", &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(GraphPageDto::from_frames(frames)))
 }
@@ -51,8 +54,9 @@ pub async fn link(
         txn_id: None,
         act_as: ident.act_as.clone(),
     };
+    let started = Instant::now();
     let out = client.link(&req).await;
-    state.record("link", &ident, Outcome::of(&out));
+    state.record("link", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(LinkResponseDto::from(resp)))
 }
@@ -75,8 +79,9 @@ pub async fn unlink(
         txn_id: None,
         act_as: ident.act_as.clone(),
     };
+    let started = Instant::now();
     let out = client.unlink(&req).await;
-    state.record("unlink", &ident, Outcome::of(&out));
+    state.record("unlink", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(UnlinkResponseDto::from(resp)))
 }

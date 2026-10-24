@@ -1,5 +1,7 @@
 //! Identity + capability handlers: whoami / capabilities.
 
+use std::time::Instant;
+
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
@@ -17,7 +19,7 @@ pub async fn whoami(
 ) -> Result<Json<WhoamiDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
-    state.record("whoami", &ident, Outcome::Ok);
+    state.record_untimed("whoami", &ident, Outcome::Ok);
     Ok(Json(WhoamiDto::for_identity(&ident, client.connection())))
 }
 
@@ -30,8 +32,9 @@ pub async fn capabilities(
     let client = state.client_for(&ident.credential).await?;
     let mut req = GetCapabilitiesRequest::default();
     ident.scope(&mut req);
+    let started = Instant::now();
     let out = client.capabilities(&req).await;
-    state.record("capabilities", &ident, Outcome::of(&out));
+    state.record("capabilities", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(CapabilitiesDto::from(resp)))
 }

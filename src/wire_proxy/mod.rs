@@ -227,8 +227,15 @@ async fn pump_customer_to_brain(
 fn record(meter: &Arc<dyn MeteringSink>, tenant: Option<&str>, opcode: u16, outcome: Outcome) {
     meter.record(&MeterEvent {
         tenant,
+        // The proxy forwards the customer's own credential, so the connection
+        // *is* the tenant and there is no delegated identity to report.
+        act_as: None,
         op: op_name(opcode),
         outcome,
+        // Frames are spliced without pairing request to response, so there is
+        // no round trip to measure here.
+        latency: None,
+        recall: None,
     });
 }
 

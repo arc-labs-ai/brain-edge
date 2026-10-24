@@ -1,5 +1,7 @@
 //! Schema handlers: get / upload / validate / replace.
 
+use std::time::Instant;
+
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
@@ -26,8 +28,9 @@ pub async fn get(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.get_schema(&req).await;
-    state.record("get_schema", &ident, Outcome::of(&out));
+    state.record("get_schema", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaDto::from(resp)))
 }
@@ -46,8 +49,9 @@ pub async fn upload(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.upload_schema(&req).await;
-    state.record("upload_schema", &ident, Outcome::of(&out));
+    state.record("upload_schema", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaUploadDto::from(resp)))
 }
@@ -63,8 +67,9 @@ pub async fn validate(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.validate_schema(&req).await;
-    state.record("validate_schema", &ident, Outcome::of(&out));
+    state.record("validate_schema", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaValidateDto::from(resp)))
 }
@@ -89,8 +94,9 @@ pub async fn replace(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.replace_schema(&req).await;
-    state.record("replace_schema", &ident, Outcome::of(&out));
+    state.record("replace_schema", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaReplaceDto::from(resp)))
 }
@@ -115,8 +121,9 @@ pub async fn list(
         .map_err(ApiError::bad_request)?;
     ident.scope(&mut req);
 
+    let started = Instant::now();
     let out = client.list_schemas_frames(&req).await;
-    state.record("list_schemas", &ident, Outcome::of(&out));
+    state.record("list_schemas", &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListSchemasResponseDto::from_frames(frames)))
 }
@@ -135,8 +142,9 @@ pub async fn extractors(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.extractor_list(&req).await;
-    state.record("extractor_list", &ident, Outcome::of(&out));
+    state.record("extractor_list", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListExtractorsResponseDto::from(resp)))
 }
@@ -162,8 +170,9 @@ pub async fn drop(
         .map_err(ApiError::bad_request)?;
     ident.scope(&mut req);
 
+    let started = Instant::now();
     let out = client.drop_schema(&req).await;
-    state.record("drop_schema", &ident, Outcome::of(&out));
+    state.record("drop_schema", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaDropResponseDto::from(resp)))
 }

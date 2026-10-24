@@ -3,6 +3,8 @@
 //! Scoped to the caller's effective space like the space verbs, but a session
 //! has an id of its own, so create and delete name one.
 
+use std::time::Instant;
+
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
@@ -28,8 +30,9 @@ pub async fn create(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.create_session(&req).await;
-    state.record("create_session", &ident, Outcome::of(&out));
+    state.record("create_session", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     let status = if resp.created {
         StatusCode::CREATED
@@ -50,8 +53,9 @@ pub async fn list(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.list_sessions(&req).await;
-    state.record("list_sessions", &ident, Outcome::of(&out));
+    state.record("list_sessions", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListSessionsResponseDto::from(resp)))
 }
@@ -71,8 +75,9 @@ pub async fn delete(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.delete_session(&req).await;
-    state.record("delete_session", &ident, Outcome::of(&out));
+    state.record("delete_session", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SessionErasedDto::from(resp)))
 }

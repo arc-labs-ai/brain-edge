@@ -189,6 +189,23 @@ impl RecallResponseDto {
         Self::build(answer_kind, memories, trace)
     }
 
+    /// Same, but with the trace dropped.
+    ///
+    /// Used when the deployment's metering sink asked Brain for the trace to
+    /// derive answer-quality signals from, and the caller did not ask for it.
+    /// The signals are read off the frames before this runs; the blob itself
+    /// is diagnostics the client did not request and does not get.
+    #[must_use]
+    pub fn from_frames_untraced(frames: Vec<RecallResponseFrameWire>) -> Self {
+        let mut answer_kind = AnswerKindWire::None;
+        let mut memories = Vec::new();
+        for frame in frames {
+            answer_kind = frame.answer_kind;
+            memories.extend(frame.memories);
+        }
+        Self::build(answer_kind, memories, None)
+    }
+
     fn build(
         answer_kind: AnswerKindWire,
         memories: Vec<MemoryResult>,

@@ -5,6 +5,8 @@
 //! and never takes from the client — a credential cannot address a space it is
 //! not bound to, so there is nothing for a path to name.
 
+use std::time::Instant;
+
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
@@ -35,8 +37,9 @@ pub async fn create(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.create_space(&req).await;
-    state.record("create_space", &ident, Outcome::of(&out));
+    state.record("create_space", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     let status = if resp.created {
         StatusCode::CREATED
@@ -57,8 +60,9 @@ pub async fn list(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.list_spaces(&req).await;
-    state.record("list_spaces", &ident, Outcome::of(&out));
+    state.record("list_spaces", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListSpacesResponseDto::from(resp)))
 }
@@ -74,8 +78,9 @@ pub async fn delete(
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
+    let started = Instant::now();
     let out = client.delete_space(&req).await;
-    state.record("delete_space", &ident, Outcome::of(&out));
+    state.record("delete_space", &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SpaceErasedDto::from(resp)))
 }

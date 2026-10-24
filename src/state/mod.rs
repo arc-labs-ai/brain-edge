@@ -19,7 +19,7 @@ use crate::error::ApiError;
 use crate::pool::{BrainPool, BrainPoolConfig};
 use crate::port::{
     BearerResolver, CredentialResolver, LlmCredentialStore, MeterEvent, MeteringSink, NoopMeter,
-    Outcome, ResolvedCredential,
+    Outcome, RecallSignals, ResolvedCredential,
 };
 use zeroize::Zeroizing;
 
@@ -180,11 +180,46 @@ impl EdgeState {
     }
 
     /// Record one op's outcome via the injected sink (fire-and-forget).
-    pub fn record(&self, op: &str, ident: &ResolvedCredential, outcome: Outcome) {
+    pub fn record(
+        &self,
+        op: &str,
+        ident: &ResolvedCredential,
+        outcome: Outcome,
+        latency: Duration,
+    ) {
+        self.record_recall(op, ident, outcome, Some(latency), None);
+    }
+
+    /// Whether the injected sink wants RECALL's pipeline trace on every call.
+    #[must_use]
+    pub fn wants_recall_trace(&self) -> bool {
+        self.inner.meter.wants_recall_trace()
+    }
+
+    /// Record an op that never reached Brain, so has no round trip to report.
+    pub fn record_untimed(&self, op: &str, ident: &ResolvedCredential, outcome: Outcome) {
+        self.record_recall(op, ident, outcome, None, None);
+    }
+
+    /// Record one op, carrying RECALL's answer-quality signals.
+    ///
+    /// Split from [`Self::record`] so the other fifty-odd call sites do not
+    /// each pass a `None` that means nothing for them.
+    pub fn record_recall(
+        &self,
+        op: &str,
+        ident: &ResolvedCredential,
+        outcome: Outcome,
+        latency: Option<Duration>,
+        recall: Option<RecallSignals>,
+    ) {
         self.inner.meter.record(&MeterEvent {
             tenant: ident.tenant.as_deref(),
+            act_as: ident.act_as.as_ref(),
             op,
             outcome,
+            latency,
+            recall,
         });
     }
 
