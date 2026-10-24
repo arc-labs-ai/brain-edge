@@ -404,15 +404,14 @@ const DEFAULT_SCHEMA_PAGE: u32 = 100;
 const MAX_SCHEMA_PAGE: u32 = 1000;
 
 impl ListSchemasQuery {
-    /// Build the wire request. The namespace is the caller's own — `act_as`
-    /// pins it, and naming another would be a scope the credential does not
-    /// carry.
+    /// Build the wire request for `namespace`, which the handler reads from
+    /// the credential Brain resolved — never from the request.
     ///
     /// # Errors
     /// The cursor is not hex.
-    pub fn to_request(&self) -> Result<SchemaListRequest, String> {
+    pub fn to_request(&self, namespace: &str) -> Result<SchemaListRequest, String> {
         Ok(SchemaListRequest {
-            namespace: String::new(),
+            namespace: namespace.to_owned(),
             limit: self
                 .limit
                 .filter(|n| *n > 0)
@@ -568,18 +567,28 @@ fn drop_target(raw: &str) -> Result<u8, String> {
 }
 
 impl SchemaDropQuery {
-    /// Build the wire request for `kind`/`name`. The namespace is the
-    /// caller's own; `act_as` pins it.
+    /// Build the wire request for `kind`/`name` in `namespace`.
+    ///
+    /// The namespace is sent explicitly and is NOT optional: `SCHEMA_DROP`
+    /// requires it to equal the caller's own and rejects anything else —
+    /// including the empty string — with `Unauthorized`. The handler reads it
+    /// from the credential Brain resolved, so it is still never taken from
+    /// the request.
     ///
     /// # Errors
     /// An unknown kind, or a blank name.
-    pub fn to_request(&self, kind: &str, name: &str) -> Result<SchemaDropRequest, String> {
+    pub fn to_request(
+        &self,
+        namespace: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<SchemaDropRequest, String> {
         let target_name = name.trim().to_owned();
         if target_name.is_empty() {
             return Err("name must not be blank".into());
         }
         Ok(SchemaDropRequest {
-            namespace: String::new(),
+            namespace: namespace.to_owned(),
             target_kind: drop_target(kind)?,
             target_name,
             force: self.force,
@@ -644,19 +653,19 @@ mod schema_introspection_tests {
 
     #[test]
     fn list_defaults_clamps_and_decodes_the_cursor() {
-        let q = ListSchemasQuery::default().to_request().unwrap();
+        let q = ListSchemasQuery::default().to_request("mirror").unwrap();
         assert_eq!(q.limit, DEFAULT_SCHEMA_PAGE);
         assert_eq!(q.cursor, Vec::<u8>::new());
-        assert!(
-            q.namespace.is_empty(),
-            "the namespace comes from act_as, never the query"
+        assert_eq!(
+            q.namespace, "mirror",
+            "the namespace comes from the resolved credential, never the query"
         );
 
         let q = ListSchemasQuery {
             limit: Some(99_999),
             cursor: Some("0a0b".into()),
         }
-        .to_request()
+        .to_request("mirror")
         .unwrap();
         assert_eq!(q.limit, MAX_SCHEMA_PAGE);
         assert_eq!(q.cursor, vec![0x0a, 0x0b]);
@@ -666,7 +675,7 @@ mod schema_introspection_tests {
                 limit: None,
                 cursor: Some("nothex".into()),
             }
-            .to_request()
+            .to_request("mirror")
             .is_err()
         );
     }
@@ -716,15 +725,19 @@ mod schema_introspection_tests {
     #[test]
     fn drop_maps_the_kind_segment_and_rejects_anything_else() {
         let q = SchemaDropQuery { force: true };
-        let req = q.to_request("predicate", "works_at").unwrap();
+        let req = q.to_request("mirror", "predicate", "works_at").unwrap();
         assert_eq!(req.target_kind, schema_drop_target::PREDICATE);
         assert_eq!(req.target_name, "works_at");
         assert!(req.force);
-        assert!(req.namespace.is_empty(), "the namespace comes from act_as");
+        assert_eq!(
+            req.namespace, "mirror",
+            "SCHEMA_DROP requires the caller's own namespace and rejects an \
+             empty one with Unauthorized — caught live against real Brain"
+        );
 
         assert_eq!(
             SchemaDropQuery::default()
-                .to_request("relation_type", "employs")
+                .to_request("mirror", "relation_type", "employs")
                 .unwrap()
                 .target_kind,
             schema_drop_target::RELATION_TYPE
@@ -733,13 +746,13 @@ mod schema_introspection_tests {
         // Entity types are deliberately not droppable: they are global in the
         // v1 storage model, so dropping one would race other namespaces.
         let err = SchemaDropQuery::default()
-            .to_request("entity_type", "Person")
+            .to_request("mirror", "entity_type", "Person")
             .unwrap_err();
         assert!(err.contains("predicate"), "the error names what IS allowed");
 
         assert!(
             SchemaDropQuery::default()
-                .to_request("predicate", "  ")
+                .to_request("mirror", "predicate", "  ")
                 .is_err()
         );
     }
@@ -747,7 +760,7 @@ mod schema_introspection_tests {
     #[test]
     fn drop_defaults_to_refusing_to_orphan_live_rows() {
         let req = SchemaDropQuery::default()
-            .to_request("predicate", "p")
+            .to_request("mirror", "predicate", "p")
             .unwrap();
         assert!(
             !req.force,

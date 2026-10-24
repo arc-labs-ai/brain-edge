@@ -101,9 +101,13 @@ pub async fn list(
     headers: HeaderMap,
     Query(query): Query<ListSchemasQuery>,
 ) -> Result<Json<ListSchemasResponseDto>, ApiError> {
-    let req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
+    // The namespace Brain proved from the credential, not one the caller
+    // asked for.
+    let req = query
+        .to_request(&client.connection().namespace)
+        .map_err(ApiError::bad_request)?;
 
     let out = client.list_schemas_frames(&req).await;
     state.record("list_schemas", &ident, Outcome::of(&out));
@@ -143,11 +147,11 @@ pub async fn drop(
     Path((kind, name)): Path<(String, String)>,
     Query(query): Query<SchemaDropQuery>,
 ) -> Result<Json<SchemaDropResponseDto>, ApiError> {
-    let req = query
-        .to_request(&kind, &name)
-        .map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
+    let req = query
+        .to_request(&client.connection().namespace, &kind, &name)
+        .map_err(ApiError::bad_request)?;
 
     let out = client.drop_schema(&req).await;
     state.record("drop_schema", &ident, Outcome::of(&out));
