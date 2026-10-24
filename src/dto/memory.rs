@@ -301,14 +301,12 @@ impl MemoryListPageDto {
 /// stage produced (embedding vector, stored record, analyzed keyword terms,
 /// write-time HyPE questions, extracted knowledge graph) plus the memory text.
 ///
-/// There is no `found` flag. The wire response carries one, because at the
-/// wire level there is no status code to carry it instead; over HTTP an
-/// absent memory is a `404`, the same as every other single-resource read on
-/// this edge (`/v1/entities/{id}`, `/v1/statements/{id}`, `/v1/relations/{id}`).
-/// Forwarding the flag would have made this the one read where a missing
-/// resource arrives as `200` — and a `found` field that is `true` in every
-/// response a client can actually receive is worse than no field at all,
-/// because it invites a branch that never runs.
+/// An absent memory is a `404`, the same as every other single-resource read
+/// on this edge (`/v1/entities/{id}`, `/v1/statements/{id}`,
+/// `/v1/relations/{id}`). No special handling here produces that: Brain
+/// answers `MemoryNotFound` in the `NotFound` category and
+/// [`ApiError::from_brain`] maps the category, exactly as it does for the
+/// siblings.
 ///
 /// An existing memory whose artifact bundle has not been written yet is a
 /// different case and still a `200`: the memory is there, with an empty
@@ -363,9 +361,6 @@ impl From<MemoryEdgeWire> for MemoryEdgeDto {
 }
 
 impl From<MemoryInspectResponse> for MemoryInspectDto {
-    /// Callers must check `response.found` first — see the handler. A
-    /// not-found response converts to a shell of empty fields, which is not a
-    /// thing to serve.
     fn from(r: MemoryInspectResponse) -> Self {
         Self {
             memory_id: mem_id_decimal(&r.memory_id),
@@ -740,6 +735,10 @@ mod memory_tests {
     #[test]
     fn inspect_maps_stages_and_hex_encodes_graph_ids() {
         let resp = MemoryInspectResponse {
+            // Present only because this crate is pinned to the published
+            // brain-db-sdk 0.3.0, whose `MemoryInspectResponse` still declares
+            // the field. Brain no longer sends it, and the type drops it in
+            // the next SDK release — this line goes with the version bump.
             found: true,
             memory_id: [0; 16],
             text: "hello".into(),

@@ -30,7 +30,8 @@ use brain_db_sdk::wire::types::{
     EncodeStageArtifact, EntityCreateResponse, EntityGetResponse, EntityListItem,
     EntityListResponseFrame, EntityResolveResponse, EntityView, EvidenceRefWire, ForgetResponse,
     GetCapabilitiesResponse, GraphEdge, GraphFetchResponseFrame, GraphNode, HelloPayload,
-    InferenceKind, InferenceStep, LinkResponse, MemoryEdgeWire, MemoryInspectRequest,
+    ErrorCategoryWire, ErrorCodeWire, ErrorResponse, InferenceKind, InferenceStep,
+    LinkResponse, MemoryEdgeWire, MemoryInspectRequest,
     MemoryInspectResponse,
     MemoryKindWire, MemoryListItem, MemoryListResponseFrame, MemoryResult, PlanResponseFrame,
     PlanStatus, PlanStep, ReasonResponseFrame, ReasonStatus, RecallResponseFrame,
@@ -537,9 +538,10 @@ async fn dispatch_memory_ops(sock: &mut TcpStream, f: &Frame) {
 /// The `MEMORY_INSPECT` arm of the mock engine.
 ///
 /// Its own function because it answers two ways, which is the point of it:
-/// memory 99 reads back as absent (`found: false`) and everything else reads
-/// back as present. The edge turns the first into a `404` and the second into
-/// a `200`, and both directions need covering.
+/// memory 99 is answered with a `MemoryNotFound` error frame and everything
+/// else reads back as present. The edge turns the first into a `404` through
+/// the ordinary category mapping and the second into a `200`, and both
+/// directions need covering.
 async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
     // An id the engine does not have — or that belongs to another tenant,
     // which it reports the same way rather than as forbidden. The edge parses
@@ -552,20 +554,14 @@ async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
     if absent {
         send_frame(
             sock,
-            Opcode::MemoryInspectResp,
+            Opcode::Error,
             f.stream_id,
-            &MemoryInspectResponse {
-                found: false,
-                memory_id: ABSENT_ID,
-                text: String::new(),
-                artifact: EncodeStageArtifact {
-                    vector: Vec::new(),
-                    record: None,
-                    hype_questions: Vec::new(),
-                    keyword_fields: Vec::new(),
-                    graph: None,
-                },
-                edges: Vec::new(),
+            &ErrorResponse {
+                code: ErrorCodeWire::MemoryNotFound,
+                category: ErrorCategoryWire::NotFound,
+                message: "memory 99 does not exist".into(),
+                details: None,
+                retry_after_ms: None,
             },
         )
         .await;
@@ -577,6 +573,8 @@ async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
         Opcode::MemoryInspectResp,
         f.stream_id,
         &MemoryInspectResponse {
+            // Pinned-SDK artifact: brain-db-sdk 0.3.0 still declares `found`.
+            // Brain no longer sends it; this goes with the version bump.
             found: true,
             memory_id: id16(0x2a),
             text: "remembered text".into(),
@@ -1132,10 +1130,10 @@ async fn forget_reports_edges_removed() {
 #[tokio::test]
 async fn memory_inspect_404s_an_id_the_engine_does_not_have() {
     // The engine answers an absent — or another tenant's — id with
-    // `found: false`, because the wire has no status code to say it with.
-    // Over HTTP there is one, and every other single-resource read on this
-    // edge uses it, so forwarding a 200 here would make this the one route
-    // where a caller has to read the body to learn the resource is missing.
+    // `MemoryNotFound` in the `NotFound` category, which the ordinary
+    // category mapping turns into a 404. Nothing route-specific does this;
+    // the point of the test is that `inspect` now goes through the same path
+    // as every other single-resource read instead of its own.
     let (state, meter) = state_and_meter().await;
     let (status, body) = send(state, "GET", "/v1/memories/99/inspect", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1150,7 +1148,7 @@ async fn memory_inspect_returns_artifact_bundle() {
     let (status, body) = send(state, "GET", "/v1/memories/42/inspect", None).await;
     assert_eq!(status, StatusCode::OK);
     // No `found` in the body: a 200 IS the "found" answer, and an absent
-    // memory is a 404 like every other single-resource read here.
+    // memory never reaches this shape — it is a 404 from the error frame.
     assert!(body.get("found").is_none(), "{body}");
     assert_eq!(body["text"], "remembered text");
     let vector = body["artifact"]["vector"].as_array().expect("vector array");

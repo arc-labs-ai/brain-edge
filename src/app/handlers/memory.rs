@@ -101,8 +101,9 @@ pub async fn list(
 
 /// `GET /v1/memories/{id}/inspect` — one memory's durable write-artifact
 /// bundle (embedding vector, stored record, analyzed keyword terms, write-time
-/// HyPE questions, extracted graph) + its text. `found = false` for an id that
-/// doesn't exist under the caller's scope.
+/// HyPE questions, extracted graph) + its text. An id that does not exist
+/// under the caller's scope is a `404`, mapped from Brain's `MemoryNotFound`
+/// like every other single-resource read here.
 pub async fn inspect(
     State(state): State<EdgeState>,
     headers: HeaderMap,
@@ -119,20 +120,6 @@ pub async fn inspect(
     let out = client.memory_inspect(&req).await;
     state.record("memory_inspect", &ident, Outcome::of(&out));
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
-    // Brain answers an unknown id with `found: false` rather than an error,
-    // because the wire protocol has no status code to say it with. HTTP does,
-    // and every other single-resource read here uses it, so this one does too
-    // — otherwise `/v1/memories/{id}/inspect` would be the single read where a
-    // missing resource comes back `200` and the caller has to know to look
-    // inside the body for it.
-    //
-    // `found: false` also covers an id owned by another tenant, which Brain
-    // deliberately reports as absent rather than forbidden. A `404` keeps that
-    // property: it says the same thing for "never existed" and "not yours",
-    // where a `403` would confirm the id belongs to someone.
-    if !resp.found {
-        return Err(ApiError::not_found(format!("no memory {id}")));
-    }
     Ok(Json(MemoryInspectDto::from(resp)))
 }
 
