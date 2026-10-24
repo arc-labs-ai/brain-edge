@@ -167,28 +167,6 @@ pub struct RecallResponseDto {
 }
 
 impl RecallResponseDto {
-    /// Build from the streamed frames, which is what carries the trace: the
-    /// server puts it on the FINAL frame only, and the SDK's aggregating
-    /// `recall()` keeps the memories and drops the frames.
-    pub fn from_frames(frames: Vec<RecallResponseFrameWire>) -> Self {
-        let mut answer_kind = AnswerKindWire::None;
-        let mut memories = Vec::new();
-        let mut trace = None;
-        for frame in frames {
-            answer_kind = frame.answer_kind;
-            memories.extend(frame.memories);
-            if let Some(t) = frame.trace {
-                // A trace that will not serialize is not worth failing the
-                // recall over — the hits are the answer, the trace is
-                // diagnostics. Report it in place of the trace instead.
-                trace = Some(serde_json::to_string(&t).unwrap_or_else(|e| {
-                    format!("{{\"error\":\"trace could not be serialized: {e}\"}}")
-                }));
-            }
-        }
-        Self::build(answer_kind, memories, trace)
-    }
-
     /// Serialize the trace off the frames, without consuming them.
     ///
     /// The server puts the trace on the final frame only. Pulled out so the
@@ -206,7 +184,12 @@ impl RecallResponseDto {
         })
     }
 
-    /// Build with an already-serialized trace, or none.
+    /// Build from the streamed frames, with an already-serialized trace or
+    /// none.
+    ///
+    /// Frames rather than the SDK's aggregating `recall()` because the server
+    /// puts the trace on the final frame only, and the aggregate keeps the
+    /// memories and drops the frames it read them from.
     ///
     /// `None` is what the caller gets when the trace was fetched only because
     /// the metering sink wanted the signals derived from it: those are read
