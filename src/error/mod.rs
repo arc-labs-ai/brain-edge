@@ -51,6 +51,35 @@ impl ApiError {
         }
     }
 
+    /// A `403` for a credential that is valid but not permitted here.
+    ///
+    /// Distinct from `401`, which says the caller is unknown. Both exist
+    /// because a host's resolver can reach either verdict and collapsing them
+    /// tells a tenant to go fix the wrong thing.
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
+    /// A `503` for a dependency that is down but expected back.
+    ///
+    /// The identity store is the case this exists for: a host's resolver that
+    /// cannot reach its key store must say so honestly, because answering
+    /// `401` would tell a tenant their key is bad and send them to rotate a
+    /// key that is fine. Retryable, and in every SDK's retry list.
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "unavailable",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
     /// A `501` for a capability this edge was not configured with.
     ///
     /// Used when BYOK is requested but no key-encryption key is set: the edge
