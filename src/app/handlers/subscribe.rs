@@ -122,12 +122,15 @@ pub async fn subscribe(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.trim().parse::<u64>().ok());
 
-    let req = query
-        .to_request(resume_from)
-        .map_err(ApiError::bad_request)?;
-
     let ident = state.resolve(&headers).await?;
     let client = state.client_for(&ident.credential).await?;
+
+    // The space Brain resolved from the credential. Read here rather than in
+    // the DTO because this is the authorization boundary: the feed is scoped
+    // to who the caller turned out to be, not to what they asked for.
+    let req = query
+        .to_request(client.connection().space_id, resume_from)
+        .map_err(ApiError::bad_request)?;
 
     let out = client.subscribe(&req).await;
     state.record("subscribe", &ident, Outcome::of(&out));

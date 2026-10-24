@@ -77,7 +77,11 @@ impl SubscribeQuery {
     ///
     /// # Errors
     /// A filter list contains an item that is not a number of the right kind.
-    pub fn to_request(&self, resume_from: Option<u64>) -> Result<SubscribeRequest, String> {
+    pub fn to_request(
+        &self,
+        space_id: [u8; 16],
+        resume_from: Option<u64>,
+    ) -> Result<SubscribeRequest, String> {
         let sessions = csv(self.sessions.as_ref(), |s| {
             s.parse::<u64>()
                 .map_err(|_| format!("`{s}` is not a session id"))
@@ -100,10 +104,16 @@ impl SubscribeQuery {
                 session_filter: sessions,
                 kinds,
                 similar_to: None,
-                // Always the caller's own space: `act_as` pins it, and letting
-                // a query name other spaces would be a scope the credential
-                // does not carry.
-                spaces: None,
+                // The caller's own space, NAMED — not `None`.
+                //
+                // `None` or an empty list means "every space on the shard" to
+                // Brain, which is a cross-tenant feed; Brain refuses it with
+                // `filter.spaces must name only the effective space`. Sending
+                // `None` and trusting `act_as` to narrow it, as this did, was
+                // backwards: `act_as` says who the caller IS, and this filter
+                // says what they may watch. The space is taken from the
+                // connection Brain resolved, never from the query.
+                spaces: Some(vec![space_id]),
                 memory_ids,
             },
             include_history: self.include_history,
@@ -475,7 +485,7 @@ mod subscribe_tests {
             memories: Some("7".into()),
             ..query()
         };
-        let req = q.to_request(None).unwrap();
+        let req = q.to_request([7u8; 16], None).unwrap();
         assert_eq!(req.filter.session_filter.unwrap(), vec![1, 2, 3]);
         assert_eq!(
             req.filter.kinds.unwrap(),
@@ -493,19 +503,18 @@ mod subscribe_tests {
             sessions: Some(",, ".into()),
             ..query()
         }
-        .to_request(None)
+        .to_request([7u8; 16], None)
         .unwrap();
         assert!(req.filter.session_filter.is_none());
     }
 
     #[test]
-    fn spaces_are_never_taken_from_the_query() {
-        let req = query().to_request(None).unwrap();
-        assert!(
-            req.filter.spaces.is_none(),
-            "the space comes from act_as; letting a query name others would \
-             be a scope the credential does not carry"
-        );
+    fn the_feed_names_the_caller_s_own_space_and_only_that() {
+        let req = query().to_request([7u8; 16], None).unwrap();
+        // `None` means "every space on the shard" to Brain — a cross-tenant
+        // feed, which it refuses with `filter.spaces must name only the
+        // effective space`. Caught live; this pins the fix.
+        assert_eq!(req.filter.spaces.as_deref(), Some(&[[7u8; 16]][..]));
     }
 
     #[test]
@@ -517,19 +526,22 @@ mod subscribe_tests {
         // A browser resends `Last-Event-ID` on an automatic reconnect while
         // the original `?from_lsn=` is still in the URL; honouring the URL
         // would rewind the feed to where it started.
-        assert_eq!(q.to_request(Some(99)).unwrap().from_lsn, Some(99));
+        assert_eq!(
+            q.to_request([7u8; 16], Some(99)).unwrap().from_lsn,
+            Some(99)
+        );
 
         let q = SubscribeQuery {
             from_lsn: Some(10),
             ..query()
         };
-        assert_eq!(q.to_request(None).unwrap().from_lsn, Some(10));
+        assert_eq!(q.to_request([7u8; 16], None).unwrap().from_lsn, Some(10));
     }
 
     #[test]
     fn inflight_defaults_and_clamps() {
         assert_eq!(
-            query().to_request(None).unwrap().max_inflight,
+            query().to_request([7u8; 16], None).unwrap().max_inflight,
             DEFAULT_MAX_INFLIGHT
         );
         assert_eq!(
@@ -537,7 +549,7 @@ mod subscribe_tests {
                 max_inflight: Some(1_000_000),
                 ..query()
             }
-            .to_request(None)
+            .to_request([7u8; 16], None)
             .unwrap()
             .max_inflight,
             MAX_MAX_INFLIGHT
@@ -551,7 +563,7 @@ mod subscribe_tests {
                 kinds: Some("telepathic".into()),
                 ..query()
             }
-            .to_request(None)
+            .to_request([7u8; 16], None)
             .is_err(),
             "silently dropping it would give a feed that quietly filters \
              nothing the caller asked for"
