@@ -164,6 +164,12 @@ pub struct MeterEvent<'a> {
     pub latency: Option<Duration>,
     /// Set only for RECALL.
     pub recall: Option<RecallSignals>,
+    /// RECALL's read-pipeline trace, serialized, when one was fetched.
+    ///
+    /// Borrowed: a sink that does not keep traces pays nothing for this. A
+    /// host that runs a trace explorer is the reason the blob is here at all —
+    /// [`RecallSignals`] is the derived summary, this is the detail behind it.
+    pub trace: Option<&'a str>,
 }
 
 /// Record usage. Called once per data-plane op; implementations must not block

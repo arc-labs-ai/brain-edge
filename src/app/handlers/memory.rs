@@ -108,13 +108,26 @@ pub async fn recall(
         let out = client.recall_frames(&req).await;
         let latency = started.elapsed();
         let signals = out.as_ref().ok().map(|f| recall_signals(f));
-        state.record_recall("recall", &ident, Outcome::of(&out), Some(latency), signals);
+        // Serialized once, then handed to whoever asked for it. The sink gets
+        // it so a host's trace explorer keeps working when the edge serves the
+        // data plane; the caller gets it only if the request said so.
+        let trace = out
+            .as_ref()
+            .ok()
+            .and_then(|f| RecallResponseDto::serialize_trace(f));
+        state.record_recall(
+            "recall",
+            &ident,
+            Outcome::of(&out),
+            Some(latency),
+            signals,
+            trace.as_deref(),
+        );
         let frames = out.map_err(|e| ApiError::from_brain(&e))?;
-        return Ok(Json(if in_response {
-            RecallResponseDto::from_frames(frames)
-        } else {
-            RecallResponseDto::from_frames_untraced(frames)
-        }));
+        return Ok(Json(RecallResponseDto::from_frames_with_trace(
+            frames,
+            in_response.then_some(trace).flatten(),
+        )));
     }
     let started = Instant::now();
     let out = client.recall(&req).await;

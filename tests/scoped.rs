@@ -234,6 +234,7 @@ fn a_metered_event_carries_the_delegated_identity_and_its_latency() {
         outcome: Outcome::Ok,
         latency: Some(Duration::from_millis(12)),
         recall: None,
+        trace: None,
     });
 
     let seen = meter.seen.lock().expect("lock");
@@ -260,6 +261,7 @@ fn an_untimed_op_reports_no_latency_rather_than_zero() {
         outcome: Outcome::Ok,
         latency: None,
         recall: None,
+        trace: None,
     });
     let seen = meter.seen.lock().expect("lock");
     assert_eq!(seen[0].2, None);

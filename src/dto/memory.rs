@@ -189,21 +189,41 @@ impl RecallResponseDto {
         Self::build(answer_kind, memories, trace)
     }
 
-    /// Same, but with the trace dropped.
+    /// Serialize the trace off the frames, without consuming them.
     ///
-    /// Used when the deployment's metering sink asked Brain for the trace to
-    /// derive answer-quality signals from, and the caller did not ask for it.
-    /// The signals are read off the frames before this runs; the blob itself
-    /// is diagnostics the client did not request and does not get.
+    /// The server puts the trace on the final frame only. Pulled out so the
+    /// blob is produced at most once per recall even when both the caller and
+    /// the deployment's metering sink want it.
     #[must_use]
-    pub fn from_frames_untraced(frames: Vec<RecallResponseFrameWire>) -> Self {
+    pub fn serialize_trace(frames: &[RecallResponseFrameWire]) -> Option<String> {
+        frames.iter().rev().find_map(|f| f.trace.as_ref()).map(|t| {
+            // A trace that will not serialize is not worth failing the recall
+            // over — the hits are the answer, the trace is diagnostics. Report
+            // it in place of the trace instead.
+            serde_json::to_string(t).unwrap_or_else(|e| {
+                format!("{{\"error\":\"trace could not be serialized: {e}\"}}")
+            })
+        })
+    }
+
+    /// Build with an already-serialized trace, or none.
+    ///
+    /// `None` is what the caller gets when the trace was fetched only because
+    /// the metering sink wanted the signals derived from it: those are read
+    /// off the frames beforehand, and the blob is diagnostics this client did
+    /// not ask for.
+    #[must_use]
+    pub fn from_frames_with_trace(
+        frames: Vec<RecallResponseFrameWire>,
+        trace: Option<String>,
+    ) -> Self {
         let mut answer_kind = AnswerKindWire::None;
         let mut memories = Vec::new();
         for frame in frames {
             answer_kind = frame.answer_kind;
             memories.extend(frame.memories);
         }
-        Self::build(answer_kind, memories, None)
+        Self::build(answer_kind, memories, trace)
     }
 
     fn build(
@@ -1218,5 +1238,82 @@ mod memory_extras_tests {
         assert_eq!(dto.total_candidates, 9);
         assert_eq!(dto.statement_ids.len(), 1);
         assert!(dto.statement_ids[0].contains('-'));
+    }
+}
+
+#[cfg(test)]
+mod recall_trace_tests {
+    use super::RecallResponseDto;
+    use brain_db_sdk::wire::types::{
+        AnswerKindWire, RecallResponseFrame, RecallTrace, RecallTraceFilterChain,
+    };
+
+    fn frame_with_trace() -> RecallResponseFrame {
+        RecallResponseFrame {
+            answer_kind: AnswerKindWire::None,
+            memories: Vec::new(),
+            is_final: true,
+            cumulative_count: 0,
+            estimated_remaining: Some(0),
+            trace: Some(RecallTrace {
+                retrievers: Vec::new(),
+                filter_chain: RecallTraceFilterChain {
+                    before: 9,
+                    after_type: 9,
+                    after_temporal: 9,
+                    after_confidence: 9,
+                    after_tombstone: 9,
+                    after_supersession: 4,
+                    after_as_of: 4,
+                    after_limit: 4,
+                    dropped_by_type: Vec::new(),
+                    dropped_by_temporal: Vec::new(),
+                    dropped_by_confidence: Vec::new(),
+                    dropped_by_tombstone: Vec::new(),
+                    dropped_by_supersession: Vec::new(),
+                    dropped_by_as_of: Vec::new(),
+                    dropped_by_limit: Vec::new(),
+                },
+                rerank: None,
+                total_latency_ms: 1.5,
+                fusion: None,
+            }),
+        }
+    }
+
+    /// The deployment's metering sink and the caller ask independently. When
+    /// only the sink wanted the trace, the blob must not leak into the body of
+    /// a response that did not request it.
+    #[test]
+    fn a_trace_fetched_for_the_sink_stays_out_of_the_response() {
+        let frames = vec![frame_with_trace()];
+        let serialized = RecallResponseDto::serialize_trace(&frames);
+        assert!(
+            serialized.is_some(),
+            "the sink's copy is produced from the frames"
+        );
+
+        let dto = RecallResponseDto::from_frames_with_trace(frames, None);
+        assert!(
+            dto.trace.is_none(),
+            "a caller that did not ask for the trace must not receive it"
+        );
+    }
+
+    /// And when the caller did ask, it is the same serialization, not a second
+    /// one — `serialize_trace` runs once per recall and both consumers share it.
+    #[test]
+    fn the_caller_gets_the_same_serialization_the_sink_saw() {
+        let frames = vec![frame_with_trace()];
+        let serialized = RecallResponseDto::serialize_trace(&frames);
+        let dto = RecallResponseDto::from_frames_with_trace(frames, serialized.clone());
+        assert_eq!(dto.trace, serialized);
+    }
+
+    #[test]
+    fn no_trace_on_the_frames_means_nothing_to_serialize() {
+        let mut frame = frame_with_trace();
+        frame.trace = None;
+        assert!(RecallResponseDto::serialize_trace(&[frame]).is_none());
     }
 }

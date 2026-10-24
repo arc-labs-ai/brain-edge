@@ -236,6 +236,7 @@ fn record(meter: &Arc<dyn MeteringSink>, tenant: Option<&str>, opcode: u16, outc
         // no round trip to measure here.
         latency: None,
         recall: None,
+        trace: None,
     });
 }
 

@@ -187,7 +187,7 @@ impl EdgeState {
         outcome: Outcome,
         latency: Duration,
     ) {
-        self.record_recall(op, ident, outcome, Some(latency), None);
+        self.record_recall(op, ident, outcome, Some(latency), None, None);
     }
 
     /// Whether the injected sink wants RECALL's pipeline trace on every call.
@@ -198,7 +198,7 @@ impl EdgeState {
 
     /// Record an op that never reached Brain, so has no round trip to report.
     pub fn record_untimed(&self, op: &str, ident: &ResolvedCredential, outcome: Outcome) {
-        self.record_recall(op, ident, outcome, None, None);
+        self.record_recall(op, ident, outcome, None, None, None);
     }
 
     /// Record one op, carrying RECALL's answer-quality signals.
@@ -212,6 +212,7 @@ impl EdgeState {
         outcome: Outcome,
         latency: Option<Duration>,
         recall: Option<RecallSignals>,
+        trace: Option<&str>,
     ) {
         self.inner.meter.record(&MeterEvent {
             tenant: ident.tenant.as_deref(),
@@ -220,6 +221,7 @@ impl EdgeState {
             outcome,
             latency,
             recall,
+            trace,
         });
     }
 
