@@ -27,6 +27,7 @@ pub async fn get(
 ) -> Result<Json<RelationDetailDto>, ApiError> {
     let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("get_relation", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -51,6 +52,7 @@ pub async fn list(
 ) -> Result<Json<ListRelationsResponseDto>, ApiError> {
     let side = query.side().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("list_relations", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // The streamed frames rather than the flattened views: the resume cursor
@@ -94,6 +96,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<CreateRelationResponseDto>), ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("create_relation", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -121,6 +124,7 @@ pub async fn supersede(
 ) -> Result<(StatusCode, Json<SupersedeRelationResponseDto>), ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("supersede_relation", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -143,6 +147,7 @@ pub async fn tombstone(
 ) -> Result<Json<TombstoneRelationResponseDto>, ApiError> {
     let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("tombstone_relation", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 

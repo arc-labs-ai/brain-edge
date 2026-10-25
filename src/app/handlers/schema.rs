@@ -25,6 +25,7 @@ pub async fn get(
 ) -> Result<Json<SchemaDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("get_schema", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -46,6 +47,7 @@ pub async fn upload(
 ) -> Result<Json<SchemaUploadDto>, ApiError> {
     let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("upload_schema", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -64,6 +66,7 @@ pub async fn validate(
 ) -> Result<Json<SchemaValidateDto>, ApiError> {
     let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("validate_schema", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -91,6 +94,7 @@ pub async fn replace(
 ) -> Result<Json<SchemaReplaceDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("replace_schema", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -112,6 +116,7 @@ pub async fn list(
     Query(query): Query<ListSchemasQuery>,
 ) -> Result<Json<ListSchemasResponseDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
+    state.admit("list_schemas", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
     // The namespace the request runs in, not one the caller asked for.
     // Via `ident`, not `connection()`: under the hosted gateway the connection
@@ -139,6 +144,7 @@ pub async fn extractors(
 ) -> Result<Json<ListExtractorsResponseDto>, ApiError> {
     let mut req = extractor_list_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("extractor_list", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -163,6 +169,7 @@ pub async fn drop(
     Query(query): Query<SchemaDropQuery>,
 ) -> Result<Json<SchemaDropResponseDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
+    state.admit("drop_schema", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
     // See `list` for why the namespace comes from `ident`.
     let mut req = query

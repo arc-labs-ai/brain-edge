@@ -18,6 +18,7 @@ pub async fn whoami(
     headers: HeaderMap,
 ) -> Result<Json<WhoamiDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
+    state.admit("whoami", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
     state.record_untimed("whoami", &ident, Outcome::Ok);
     Ok(Json(WhoamiDto::for_identity(&ident, client.connection())))
@@ -29,6 +30,7 @@ pub async fn capabilities(
     headers: HeaderMap,
 ) -> Result<Json<CapabilitiesDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
+    state.admit("capabilities", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
     let mut req = GetCapabilitiesRequest::default();
     ident.scope(&mut req);

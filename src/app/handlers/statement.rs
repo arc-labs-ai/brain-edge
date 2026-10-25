@@ -29,6 +29,7 @@ pub async fn get(
 ) -> Result<Json<StatementDetailDto>, ApiError> {
     let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("get_statement", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -54,6 +55,7 @@ pub async fn list(
 ) -> Result<Json<ListStatementsResponseDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("list_statements", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -91,6 +93,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<CreateStatementResponseDto>), ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("create_statement", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -114,6 +117,7 @@ pub async fn supersede(
 ) -> Result<(StatusCode, Json<SupersedeStatementResponseDto>), ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("supersede_statement", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -140,6 +144,7 @@ pub async fn tombstone(
 ) -> Result<Json<TombstoneStatementResponseDto>, ApiError> {
     let mut req = query.to_tombstone(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("tombstone_statement", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -165,6 +170,7 @@ pub async fn retract(
 ) -> Result<Json<RetractStatementResponseDto>, ApiError> {
     let mut req = query.to_retract(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("retract_statement", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -185,6 +191,7 @@ pub async fn history(
 ) -> Result<Json<StatementHistoryResponseDto>, ApiError> {
     let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("statement_history", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 

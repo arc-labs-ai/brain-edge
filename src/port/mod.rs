@@ -174,9 +174,30 @@ pub struct MeterEvent<'a> {
 
 /// Record usage. Called once per data-plane op; implementations must not block
 /// the response path (fire-and-forget).
+#[async_trait::async_trait]
 pub trait MeteringSink: Send + Sync + 'static {
     /// Record one operation's outcome.
     fn record(&self, event: &MeterEvent<'_>);
+
+    /// Decide whether an op may run, *before* it runs.
+    ///
+    /// [`Self::record`] reports what happened; this is the other half — the
+    /// chance to refuse. A host that bills by usage needs somewhere to say
+    /// "this tenant is over its plan", and the only place that knows both the
+    /// op and the caller before any work happens is here: the router sees a
+    /// path, not a verb, and the engine sees a request with no notion of a
+    /// plan.
+    ///
+    /// Called for every op, so an implementation that bills only some of them
+    /// should return early on the rest rather than pay for a lookup. The
+    /// default admits everything, which is what self-host wants: there is no
+    /// plan to be over.
+    ///
+    /// Returning `Err` fails the request with that error and nothing runs.
+    async fn admit(&self, op: &str, ident: &ResolvedCredential) -> Result<(), ApiError> {
+        let _ = (op, ident);
+        Ok(())
+    }
 
     /// Whether RECALL should ask Brain for its read-pipeline trace even when
     /// the caller did not.

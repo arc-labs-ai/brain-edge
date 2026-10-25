@@ -34,6 +34,7 @@ pub async fn create(
     let body = body.map_or_else(CreateSpaceBody::default, |Json(b)| b);
     let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("create_space", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -57,6 +58,7 @@ pub async fn list(
 ) -> Result<Json<ListSpacesResponseDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("list_spaces", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -75,6 +77,7 @@ pub async fn delete(
 ) -> Result<Json<SpaceErasedDto>, ApiError> {
     let mut req = delete_space_request();
     let ident = state.resolve(&headers).await?;
+    state.admit("delete_space", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 

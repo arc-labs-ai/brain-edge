@@ -25,6 +25,7 @@ pub async fn fetch(
 ) -> Result<Json<GraphPageDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("graph_fetch", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -43,6 +44,7 @@ pub async fn link(
 ) -> Result<Json<LinkResponseDto>, ApiError> {
     let (source, target, kind, weight) = body.parts().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("link", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let req = LinkRequest {
@@ -69,6 +71,7 @@ pub async fn unlink(
 ) -> Result<Json<UnlinkResponseDto>, ApiError> {
     let (source, target, kind) = body.parts().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("unlink", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let req = UnlinkRequest {

@@ -19,6 +19,7 @@ pub async fn plan(
 ) -> Result<Json<PlanResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("plan", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
     let started = Instant::now();
@@ -36,6 +37,7 @@ pub async fn reason(
 ) -> Result<Json<ReasonResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("reason", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
     let started = Instant::now();

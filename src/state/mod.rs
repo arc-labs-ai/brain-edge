@@ -190,6 +190,17 @@ impl EdgeState {
         self.record_recall(op, ident, outcome, Some(latency), None, None);
     }
 
+    /// Ask the injected sink whether this op may run.
+    ///
+    /// Handlers call this between resolving the caller and reaching Brain, so
+    /// a refusal costs nothing but the resolve.
+    ///
+    /// # Errors
+    /// Whatever the sink decides to refuse with — a plan ceiling, typically.
+    pub async fn admit(&self, op: &str, ident: &ResolvedCredential) -> Result<(), ApiError> {
+        self.inner.meter.admit(op, ident).await
+    }
+
     /// Whether the injected sink wants RECALL's pipeline trace on every call.
     #[must_use]
     pub fn wants_recall_trace(&self) -> bool {

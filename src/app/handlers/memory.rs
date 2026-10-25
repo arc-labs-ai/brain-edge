@@ -31,6 +31,7 @@ pub async fn encode(
         return Err(ApiError::bad_request("text must not be blank"));
     }
     let ident = state.resolve(&headers).await?;
+    state.admit("encode", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // Ack-only: no `.wait(WaitMode::Derived)`. The HTTP surface has no `wait`
@@ -63,6 +64,7 @@ pub async fn recall(
         return Err(ApiError::bad_request("query must not be blank"));
     }
     let ident = state.resolve(&headers).await?;
+    state.admit("recall", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let mut builder = RecallBuilder::new(body.query)
@@ -146,6 +148,7 @@ pub async fn list(
 ) -> Result<Json<MemoryListPageDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("memory_list", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -168,6 +171,7 @@ pub async fn inspect(
 ) -> Result<Json<MemoryInspectDto>, ApiError> {
     let wire_id = parse_memory_id(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("memory_inspect", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let req = MemoryInspectRequest {
@@ -189,6 +193,7 @@ pub async fn forget(
 ) -> Result<Json<ForgetResponseDto>, ApiError> {
     let id = body.parse_id().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("forget", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let mut builder = ForgetBuilder::new(id);
@@ -216,6 +221,7 @@ pub async fn encode_vector(
 ) -> Result<Json<EncodeResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("encode_vector_direct", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -238,6 +244,7 @@ pub async fn materialize_procedural(
     let body = body.map_or_else(MaterializeProceduralBody::default, |Json(b)| b);
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
+    state.admit("materialize_procedural", &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 

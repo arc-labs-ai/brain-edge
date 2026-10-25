@@ -285,3 +285,44 @@ fn recall_tracing_is_opt_in_per_deployment() {
     };
     assert!(analytics.wants_recall_trace());
 }
+
+/// A sink that refuses one op, to prove `admit` is a real gate rather than a
+/// hook nothing consults.
+struct RefusingMeter {
+    refuse: &'static str,
+}
+
+#[async_trait::async_trait]
+impl MeteringSink for RefusingMeter {
+    fn record(&self, _event: &MeterEvent<'_>) {}
+    async fn admit(
+        &self,
+        op: &str,
+        _ident: &ResolvedCredential,
+    ) -> Result<(), brain_edge::error::ApiError> {
+        if op == self.refuse {
+            return Err(brain_edge::error::ApiError::forbidden("over plan"));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn admit_refuses_the_named_op_and_admits_the_rest() {
+    let meter = RefusingMeter { refuse: "encode" };
+    let ident = hosted();
+    assert!(meter.admit("encode", &ident).await.is_err());
+    assert!(meter.admit("recall", &ident).await.is_ok());
+}
+
+/// Self-host has no plan to be over, so the default must not refuse anything.
+#[tokio::test]
+async fn the_default_sink_admits_every_op() {
+    let ident = self_host();
+    for op in ["encode", "recall", "query_trace", "whoami"] {
+        assert!(
+            NoopMeter.admit(op, &ident).await.is_ok(),
+            "`{op}` must be admitted by default"
+        );
+    }
+}

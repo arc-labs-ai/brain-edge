@@ -51,6 +51,22 @@ impl ApiError {
         }
     }
 
+    /// A `429` for a tenant that has spent its plan's allowance.
+    ///
+    /// Same status as a rate limit, a different code, and the distinction
+    /// matters to the caller: a rate limit says "slower" and clears in
+    /// seconds, this says "you have used the month" and clears by upgrading or
+    /// waiting for the period. A client that cannot tell them apart backs off
+    /// and retries forever against a ceiling that will not move.
+    pub fn quota_exceeded(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "quota.exceeded",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
     /// A `403` for a credential that is valid but not permitted here.
     ///
     /// Distinct from `401`, which says the caller is unknown. Both exist

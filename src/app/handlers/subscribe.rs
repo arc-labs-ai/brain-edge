@@ -125,6 +125,7 @@ pub async fn subscribe(
         .and_then(|v| v.trim().parse::<u64>().ok());
 
     let ident = state.resolve(&headers).await?;
+    state.admit("subscribe", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // The space the feed is scoped to. Read here rather than in the DTO
