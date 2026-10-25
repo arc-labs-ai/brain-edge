@@ -316,6 +316,19 @@ impl ApiError {
     }
 }
 
+/// The caller-facing message, and only that.
+///
+/// `internal` is deliberately not printed: it carries the detail that is
+/// withheld from a response, and a host that logs an error it got back from
+/// the edge should not be the way that detail escapes.
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         self.log_internal();

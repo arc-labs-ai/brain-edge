@@ -326,3 +326,61 @@ async fn the_default_sink_admits_every_op() {
         );
     }
 }
+
+// --- the self-host contract -------------------------------------------------
+
+/// What self-host is promised, asserted in one place.
+///
+/// The open binary serves the whole API and the hosted product differentiates
+/// on understanding a tenant's memory, not on withholding capability. Every
+/// seam added for the hosted path therefore has to default to "the host is not
+/// here", and each of these is a way that could quietly stop being true:
+///
+/// - `admit` refusing an op would make self-host enforce a plan it does not
+///   have.
+/// - `wants_recall_trace` returning true would charge every self-hosted recall
+///   engine time for a trace nobody reads.
+/// - `act_as` being set would make Brain resolve an identity the connection
+///   did not authenticate as.
+/// - `record` doing anything would be telemetry leaving a deployment that
+///   asked for none.
+#[tokio::test]
+async fn the_self_host_defaults_cost_nothing_and_refuse_nothing() {
+    let ident = self_host();
+
+    assert!(
+        ident.act_as.is_none(),
+        "self-host's connection IS the tenant; a delegated identity would be wrong"
+    );
+
+    for op in [
+        "encode",
+        "recall",
+        "query_trace",
+        "update_entity",
+        "statement_history",
+        "subscribe",
+        "whoami",
+    ] {
+        assert!(
+            NoopMeter.admit(op, &ident).await.is_ok(),
+            "`{op}` must be admitted — self-host has no plan to be over"
+        );
+    }
+
+    assert!(
+        !NoopMeter.wants_recall_trace(),
+        "self-host must not pay engine time for a trace no sink reads"
+    );
+
+    // Records nothing, and cannot panic doing it.
+    NoopMeter.record(&MeterEvent {
+        tenant: None,
+        act_as: None,
+        op: "encode",
+        outcome: Outcome::Ok,
+        latency: Some(Duration::from_millis(1)),
+        recall: None,
+        trace: None,
+    });
+}
