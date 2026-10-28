@@ -384,6 +384,10 @@ pub enum StageEventDto {
     Hype {
         questions_written: u32,
         cost_micro_usd: u64,
+        /// Why the stage failed; empty when it did not. Relayed for the
+        /// same reason the extractor's is: without it a failed stage
+        /// reaches a subscriber as two zeroed counters and no cause.
+        error_message: String,
     },
 }
 
@@ -405,6 +409,7 @@ impl From<StagePayload> for StageEventDto {
             StagePayload::Hype(s) => Self::Hype {
                 questions_written: s.questions_written,
                 cost_micro_usd: s.cost_micro_usd,
+                error_message: s.error_message,
             },
         }
     }
@@ -621,12 +626,20 @@ mod subscribe_tests {
         e.stage_payload = Some(StagePayload::Hype(StageHypePayload {
             questions_written: 0,
             cost_micro_usd: 12,
+            error_message: "no LLM provider key registered for this namespace".to_string(),
         }));
         let json = serde_json::to_value(SubscriptionEventDto::from(e)).unwrap();
         assert_eq!(json["stage_kind"], "hype");
         assert_eq!(json["stage_outcome"], "failed");
         assert_eq!(json["stage"]["type"], "hype");
         assert_eq!(json["stage"]["cost_micro_usd"], 12);
+        // The event this test builds is a FAILED stage. Relaying the outcome
+        // without the reason is what made a degraded write unreadable over
+        // HTTP: two zeroed counters, and the cause left behind in Brain.
+        assert_eq!(
+            json["stage"]["error_message"],
+            "no LLM provider key registered for this namespace",
+        );
     }
 
     #[test]
