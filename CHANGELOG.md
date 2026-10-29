@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.4.0](https://github.com/arc-labs-ai/brain-edge/compare/v0.3.0...v0.4.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* close the self-host parity gaps, and follow the wire's renames
+
+### Fixes
+
+* let a caller read the 413, and 404 an inspect of a memory that is not there ([8d351ba](https://github.com/arc-labs-ai/brain-edge/commit/8d351ba509ef5d13ead2249218148ae55dd0b874))
+* **manifest:** describe the broker routes instead of failing on them ([f60e3c6](https://github.com/arc-labs-ai/brain-edge/commit/f60e3c60d6e23bbbf1e770978d057516fc3f3a3b))
+* scope the change feed to the caller's own space ([5e38957](https://github.com/arc-labs-ai/brain-edge/commit/5e3895731bc1181a26158083c04a905ddae55e2e))
+* send the caller's namespace on SCHEMA_LIST and SCHEMA_DROP ([9f100ba](https://github.com/arc-labs-ai/brain-edge/commit/9f100ba3448dd9188a11f65042e3f3dd60a9ef3e))
+* **subscribe:** relay the HyPE stage's failure reason ([be27be4](https://github.com/arc-labs-ai/brain-edge/commit/be27be48e4a256140d7c386c34f6d46651bf9db9))
+
+
+### Features
+
+* close the self-host parity gaps, and follow the wire's renames ([80bebe2](https://github.com/arc-labs-ai/brain-edge/commit/80bebe21564f356f91041144d70121ac2273cad9))
+* close the self-host/cloud parity gaps ([098b37a](https://github.com/arc-labs-ai/brain-edge/commit/098b37a39c94e19a0fa2fc3d19acb8f3aa494bdd))
+* **error:** add forbidden and unavailable constructors ([8386dda](https://github.com/arc-labs-ai/brain-edge/commit/8386dda31963a954a900e5fbd827480210840b72))
+* **port:** give the metering sink latency, identity and recall signals ([ee357ec](https://github.com/arc-labs-ai/brain-edge/commit/ee357ecdf0dea98ddb466923cbccd902bdea7e7f))
+* **port:** hand the metering sink RECALL's trace, serialized once ([f2637a7](https://github.com/arc-labs-ai/brain-edge/commit/f2637a7a9a7139136f3af769f3a15c054ced0bac))
+* **port:** let the metering sink refuse an op before it runs ([43bffb9](https://github.com/arc-labs-ai/brain-edge/commit/43bffb9eadf306ddaf223ca83bb4da00c4674d82))
+* **port:** resolve a tenant identity and stamp it on every request ([50bc02a](https://github.com/arc-labs-ai/brain-edge/commit/50bc02a288b33d2069892056f05cce535a1d078d))
+* serve query-plan introspection ([8a6aaa0](https://github.com/arc-labs-ai/brain-edge/commit/8a6aaa0b5fab19c51eb2e80deb347b1f6d055cb0))
+* serve schema history, extractor list and the memory extras ([2f1daf3](https://github.com/arc-labs-ai/brain-edge/commit/2f1daf369bef0de5978ec305b8e9b7a2e147f301))
+* serve the change feed as SSE, and teach the manifest to describe it ([6917581](https://github.com/arc-labs-ai/brain-edge/commit/6917581f2c535fee26e1be3e380fbaf2f8ab3f00))
+* serve the entity authoring verbs ([b469641](https://github.com/arc-labs-ai/brain-edge/commit/b469641e1b1be5e8cfd4815522c6bf84fb546af7))
+* serve the relation authoring verbs, and expose the edge chain ([f6e35a8](https://github.com/arc-labs-ai/brain-edge/commit/f6e35a831fc18755a181c91137f9c94e861295b4))
+* serve the space and session lifecycle verbs ([96324d5](https://github.com/arc-labs-ai/brain-edge/commit/96324d5fdfbbc71488f83392c7f8fd318fd4d768))
+* serve the statement authoring verbs, and fix two misaligned reads ([5c12da6](https://github.com/arc-labs-ai/brain-edge/commit/5c12da67fe4f0db162d46759fb62c829e0c09e27))
+
+
+### Refactoring
+
+* **dto:** one recall constructor ([0c4c392](https://github.com/arc-labs-ai/brain-edge/commit/0c4c3920e747230b72fbb5fab50bd2648c80d222))
+* let the category mapping produce inspect's 404 ([a03d1c7](https://github.com/arc-labs-ai/brain-edge/commit/a03d1c7c922876a95d7019461eda53bcc42b227c))
+
+
+### Tests and verification
+
+* cover the request/response mapping for every route added ([8fb0775](https://github.com/arc-labs-ai/brain-edge/commit/8fb07754387dffcfa82b1d25a03f59e63151179b))
+* **port:** pin what the self-host defaults promise ([c08faf1](https://github.com/arc-labs-ai/brain-edge/commit/c08faf1908472f59d43ca9fd8375d9fcfb3a58ff))
+
+
+### Build and tooling
+
+* **deps:** require brain-db-sdk 0.4.0 and drop the local patch ([5a004bd](https://github.com/arc-labs-ai/brain-edge/commit/5a004bde9da4a816296421d6552580c0c58ba5b2))
+
 ## [0.3.0](https://github.com/arc-labs-ai/brain-edge/compare/v0.2.1...v0.3.0) (2026-10-21)
 
 
