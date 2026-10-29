@@ -75,7 +75,10 @@ fn a_client_supplied_act_as_is_discarded() {
 
     hosted().scope(&mut req);
     let act_as = req.act_as.clone().expect("resolver identity");
-    assert_eq!(act_as.namespace, "acme", "the forged namespace must not survive");
+    assert_eq!(
+        act_as.namespace, "acme",
+        "the forged namespace must not survive"
+    );
     assert_eq!(act_as.grant, 0, "the forged grant must not survive");
 
     // And the same request against a self-host deployment loses it entirely,
@@ -185,8 +188,7 @@ fn a_grant_cannot_exceed_what_the_delegator_holds() {
     }
     .to_bits();
 
-    let tenant =
-        SpacePermissions::from_bits(permissions::delegated(delegator, permissions::ADMIN));
+    let tenant = SpacePermissions::from_bits(permissions::delegated(delegator, permissions::ADMIN));
     assert!(
         !tenant.can_admin,
         "a grant is bounded by the delegator's own bits"
@@ -198,7 +200,12 @@ fn a_grant_cannot_exceed_what_the_delegator_holds() {
 /// A sink that keeps whole events, so the fields added for the hosted
 /// deployment can be asserted rather than just the tenant label.
 /// One recorded event, flattened to what these tests assert on.
-type SeenEvent = (String, Option<ActAs>, Option<Duration>, Option<RecallSignals>);
+type SeenEvent = (
+    String,
+    Option<ActAs>,
+    Option<Duration>,
+    Option<RecallSignals>,
+);
 
 #[derive(Default)]
 struct CapturingMeter {

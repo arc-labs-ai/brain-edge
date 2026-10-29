@@ -23,8 +23,8 @@
 //! resolver runs before any connection is opened, so a rejecting resolver
 //! short-circuits every route without one.
 
-use std::time::Duration;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};

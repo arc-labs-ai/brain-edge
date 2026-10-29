@@ -31,7 +31,12 @@ pub async fn explain(
 
     let started = Instant::now();
     let out = client.query_explain(&req).await;
-    state.record("query_explain", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "query_explain",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(QueryExplainResponseDto::from(resp)))
 }

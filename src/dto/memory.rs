@@ -178,9 +178,8 @@ impl RecallResponseDto {
             // A trace that will not serialize is not worth failing the recall
             // over — the hits are the answer, the trace is diagnostics. Report
             // it in place of the trace instead.
-            serde_json::to_string(t).unwrap_or_else(|e| {
-                format!("{{\"error\":\"trace could not be serialized: {e}\"}}")
-            })
+            serde_json::to_string(t)
+                .unwrap_or_else(|e| format!("{{\"error\":\"trace could not be serialized: {e}\"}}"))
         })
     }
 

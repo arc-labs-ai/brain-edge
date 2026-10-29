@@ -64,7 +64,12 @@ pub async fn list(
             ident.scope(&mut req);
             let started = Instant::now();
             let out = client.list_relations_from_frames(&req).await;
-            state.record("list_relations", &ident, Outcome::of(&out), started.elapsed());
+            state.record(
+                "list_relations",
+                &ident,
+                Outcome::of(&out),
+                started.elapsed(),
+            );
             split_from_frames(out.map_err(|e| ApiError::from_brain(&e))?)
         }
         RelationSide::To => {
@@ -72,7 +77,12 @@ pub async fn list(
             ident.scope(&mut req);
             let started = Instant::now();
             let out = client.list_relations_to_frames(&req).await;
-            state.record("list_relations", &ident, Outcome::of(&out), started.elapsed());
+            state.record(
+                "list_relations",
+                &ident,
+                Outcome::of(&out),
+                started.elapsed(),
+            );
             split_to_frames(out.map_err(|e| ApiError::from_brain(&e))?)
         }
     };
@@ -102,7 +112,12 @@ pub async fn create(
 
     let started = Instant::now();
     let out = client.create_relation(&req).await;
-    state.record("create_relation", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "create_relation",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok((
         StatusCode::CREATED,
@@ -130,7 +145,12 @@ pub async fn supersede(
 
     let started = Instant::now();
     let out = client.supersede_relation(&req).await;
-    state.record("supersede_relation", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "supersede_relation",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok((
         StatusCode::CREATED,
@@ -153,7 +173,12 @@ pub async fn tombstone(
 
     let started = Instant::now();
     let out = client.tombstone_relation(&req).await;
-    state.record("tombstone_relation", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "tombstone_relation",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TombstoneRelationResponseDto::from(resp)))
 }

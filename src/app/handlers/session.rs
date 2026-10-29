@@ -33,7 +33,12 @@ pub async fn create(
 
     let started = Instant::now();
     let out = client.create_session(&req).await;
-    state.record("create_session", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "create_session",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     let status = if resp.created {
         StatusCode::CREATED
@@ -57,7 +62,12 @@ pub async fn list(
 
     let started = Instant::now();
     let out = client.list_sessions(&req).await;
-    state.record("list_sessions", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "list_sessions",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListSessionsResponseDto::from(resp)))
 }
@@ -80,7 +90,12 @@ pub async fn delete(
 
     let started = Instant::now();
     let out = client.delete_session(&req).await;
-    state.record("delete_session", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "delete_session",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SessionErasedDto::from(resp)))
 }

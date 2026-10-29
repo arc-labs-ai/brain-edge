@@ -53,7 +53,12 @@ pub async fn upload(
 
     let started = Instant::now();
     let out = client.upload_schema(&req).await;
-    state.record("upload_schema", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "upload_schema",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaUploadDto::from(resp)))
 }
@@ -72,7 +77,12 @@ pub async fn validate(
 
     let started = Instant::now();
     let out = client.validate_schema(&req).await;
-    state.record("validate_schema", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "validate_schema",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaValidateDto::from(resp)))
 }
@@ -100,7 +110,12 @@ pub async fn replace(
 
     let started = Instant::now();
     let out = client.replace_schema(&req).await;
-    state.record("replace_schema", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "replace_schema",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SchemaReplaceDto::from(resp)))
 }
@@ -150,7 +165,12 @@ pub async fn extractors(
 
     let started = Instant::now();
     let out = client.extractor_list(&req).await;
-    state.record("extractor_list", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "extractor_list",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListExtractorsResponseDto::from(resp)))
 }

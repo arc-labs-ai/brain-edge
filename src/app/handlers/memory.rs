@@ -180,7 +180,12 @@ pub async fn inspect(
     };
     let started = Instant::now();
     let out = client.memory_inspect(&req).await;
-    state.record("memory_inspect", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "memory_inspect",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MemoryInspectDto::from(resp)))
 }
@@ -227,7 +232,12 @@ pub async fn encode_vector(
 
     let started = Instant::now();
     let out = client.encode_vector_direct(&req).await;
-    state.record("encode_vector_direct", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "encode_vector_direct",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EncodeResponseDto::from(resp)))
 }
@@ -250,7 +260,12 @@ pub async fn materialize_procedural(
 
     let started = Instant::now();
     let out = client.materialize_procedural(&req).await;
-    state.record("materialize_procedural", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "materialize_procedural",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MaterializeProceduralResponseDto::from(resp)))
 }
@@ -269,7 +284,9 @@ fn recall_signals(frames: &[RecallResponseFrameWire]) -> RecallSignals {
         .flat_map(|f| f.memories.iter())
         .map(|m| m.confidence)
         .fold(0.0_f32, f32::max);
-    let answer_kind = frames.last().map_or(AnswerKindWire::None, |f| f.answer_kind);
+    let answer_kind = frames
+        .last()
+        .map_or(AnswerKindWire::None, |f| f.answer_kind);
     let Some(trace) = frames.iter().rev().find_map(|f| f.trace.as_ref()) else {
         return RecallSignals {
             returned_n: u32::try_from(returned_n).unwrap_or(u32::MAX),

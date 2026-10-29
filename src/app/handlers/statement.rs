@@ -35,7 +35,12 @@ pub async fn get(
 
     let started = Instant::now();
     let out = client.get_statement(&req).await;
-    state.record("get_statement", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "get_statement",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
 
     // Resolve the subject and object names so a caller does not have to make
@@ -64,7 +69,12 @@ pub async fn list(
     // unreachable.
     let started = Instant::now();
     let out = client.list_statements_frames(&req).await;
-    state.record("list_statements", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "list_statements",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let (views, next_cursor) = split_list_frames(out.map_err(|e| ApiError::from_brain(&e))?);
 
     // One resolve pass for the whole page: the ids are deduplicated first, so
@@ -99,7 +109,12 @@ pub async fn create(
 
     let started = Instant::now();
     let out = client.create_statement(&req).await;
-    state.record("create_statement", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "create_statement",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok((
         StatusCode::CREATED,
@@ -123,7 +138,12 @@ pub async fn supersede(
 
     let started = Instant::now();
     let out = client.supersede_statement(&req).await;
-    state.record("supersede_statement", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "supersede_statement",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok((
         StatusCode::CREATED,
@@ -150,7 +170,12 @@ pub async fn tombstone(
 
     let started = Instant::now();
     let out = client.tombstone_statement(&req).await;
-    state.record("tombstone_statement", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "tombstone_statement",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TombstoneStatementResponseDto::from(resp)))
 }
@@ -176,7 +201,12 @@ pub async fn retract(
 
     let started = Instant::now();
     let out = client.retract_statement(&req).await;
-    state.record("retract_statement", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "retract_statement",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(RetractStatementResponseDto::from(resp)))
 }
@@ -197,7 +227,12 @@ pub async fn history(
 
     let started = Instant::now();
     let out = client.statement_history_frames(&req).await;
-    state.record("statement_history", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        "statement_history",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(StatementHistoryResponseDto::from_frames(frames)))
 }

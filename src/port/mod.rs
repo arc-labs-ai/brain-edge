@@ -56,7 +56,6 @@ impl ResolvedCredential {
         request.set_act_as(self.act_as.clone());
     }
 
-
     /// The namespace this request runs in.
     ///
     /// A handler that needs the caller's namespace must ask here rather than
