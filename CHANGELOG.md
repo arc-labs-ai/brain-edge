@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.0...v0.4.1) (2026-11-03)
+
+
+### Documentation
+
+* document all 62 routes, fix six rustdoc links, and gate both ([#20](https://github.com/arc-labs-ai/brain-edge/issues/20)) ([b3a0422](https://github.com/arc-labs-ai/brain-edge/commit/b3a042276666f0b4af5b611991eea7bf363c0daf))
+
 ## [0.4.0](https://github.com/arc-labs-ai/brain-edge/compare/v0.3.0...v0.4.0) (2026-10-29)
 
 
