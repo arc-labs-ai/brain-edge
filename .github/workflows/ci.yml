@@ -45,6 +45,27 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # The README's API tables are the human-readable half of the contract
+      # `http_manifest.py` emits for the three SDK clients, and nothing
+      # connected them. They had drifted to 27 of 62 routes, and one paragraph
+      # claimed listing schema versions "is not exposed" while
+      # `GET /v1/schemas` was served and brain-mcp was calling it. A missing
+      # row is a gap; a documented negative that is false is worse.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: README documents every route
+        run: python3 tools/check_readme_routes.py
+
+      # docs.rs is where a reader meets this crate and no job here invoked
+      # rustdoc, so nothing could notice when its links rotted — six warnings
+      # had accumulated that way, four of them links to private items that
+      # render as no link at all. Levels live in Cargo.toml's
+      # `[lints.rustdoc]`; this step supplies the invocation, which was the
+      # missing half.
+      - name: Docs (rustdoc links resolve)
+        run: cargo doc --no-deps --all-features
+
       - name: Test
         run: cargo test --all-targets
 
@@ -52,6 +73,23 @@ jobs:
       # release image, which builds --locked too.
       - name: Build (release, locked)
         run: cargo build --release --locked --bin brain-edge
+
+      # Nothing audited dependencies. This crate terminates untrusted
+      # connections, so a vulnerable transitive is reachable from the public
+      # internet by definition. The sibling SDK and MCP repos both gate this;
+      # here it was the one missing check.
+      #
+      # `cargo audit` exits non-zero on a *vulnerability* and only warns on an
+      # `unsound`/`unmaintained` advisory, which is the behaviour wanted: the
+      # tree currently carries one unsoundness warning (tokio's `AsyncFd::new`
+      # I/O-safety advisory) that no released tokio fixes yet, and failing the
+      # build on it would mean pinning the gate open from day one.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit dependencies
+        run: cargo audit
 
   docker:
     name: Docker image

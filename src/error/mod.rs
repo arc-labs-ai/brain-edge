@@ -5,7 +5,7 @@
 //! `Display` text, and forwarding that to an HTTP caller tells them about the
 //! edge's conversation with its database rather than about their request. The
 //! detail is logged with the request id instead, so an operator can still find
-//! it — see [`ApiError::log_internal`].
+//! it — see the private `log_internal` below.
 
 use axum::Json;
 use axum::http::StatusCode;
