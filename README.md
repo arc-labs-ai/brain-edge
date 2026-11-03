@@ -32,7 +32,7 @@ from it, so your key's scoping is honored end to end.
 | `POST`   | `/v1/memories`    | `{ text, context?, occurred_at? }`         | `{ memory_id, was_deduplicated, salience, kind, created_at_unix_nanos, auto_edges_added }` |
 | `GET`    | `/v1/memories`    | `limit?` (≤100, default 50), `cursor?`, `dir?` (`desc` default \| `asc`), `include_tombstoned?` | `{ items: [...], next_cursor? }` — `next_cursor` is omitted on the last page |
 | `DELETE` | `/v1/memories`    | `{ memory_id, hard? }`                     | `{ memory_id, was_already_forgotten, edges_removed }` |
-| `GET`    | `/v1/memories/{id}/inspect` | —                                | `{ found, memory_id, text, artifact }` — the per-stage write-pipeline output (embedding, extraction, HyPE questions, extracted graph) |
+| `GET` | `/v1/memories/{id}/inspect` | — | `{ memory_id, text, artifact, edges }` — the per-stage write-pipeline output (embedding, extraction, HyPE questions, extracted graph) |
 | `POST`   | `/v1/recall`      | `{ query \| cue, max_results?, subject? }` | `{ answer_kind, memories: [{ memory_id, text, similarity_score, confidence, salience, kind, created_at_unix_nanos }] }` |
 | `POST`   | `/v1/links`       | `{ source, target, kind, weight? }`        | `{ source, target, kind, weight, created_at_unix_nanos, already_existed }` |
 | `DELETE` | `/v1/links`       | `{ source, target, kind }`                 | `{ source, target, kind, removed }` |
@@ -125,12 +125,12 @@ credential, never named in the request.
 
 | Method   | Path                | Body / query        | Returns |
 | -------- | ------------------- | ------------------- | ------- |
-| `POST`   | `/v1/sessions`      | `{ session_id, title? }` | `{ session_id, created, created_at_unix_nanos }` — idempotent on the id you choose |
-| `GET`    | `/v1/sessions`      | `limit?`            | `{ space_id, sessions, count }` |
-| `DELETE` | `/v1/sessions/{id}` | `hard?`             | `{ session_id, erased, memories_removed }` — soft by default, which leaves the memories in place |
-| `POST`   | `/v1/spaces`        | —                   | `{ space, created, created_at_unix_nanos }` |
-| `GET`    | `/v1/spaces`        | `limit?`            | `{ spaces, count }` |
-| `DELETE` | `/v1/spaces`        | `hard?`             | `{ space, erased, memories_removed }` |
+| `POST` | `/v1/sessions` | `{ session_id, title? }` | `{ space_id, session_id, created, created_at_unix_nanos, last_active_unix_nanos, memory_count }` — idempotent on the id you choose |
+| `GET` | `/v1/sessions` | `{ limit? }` | `{ space_id, sessions }` |
+| `DELETE` | `/v1/sessions/{id}` | `{ hard? }` | `{ space_id, session_id, existed, memories_forgotten }` — soft unless `hard`, which also forgets the session's memories |
+| `POST` | `/v1/spaces` | — | `{ space, created, created_at_unix_nanos, last_active_unix_nanos, memory_count, session_count }` |
+| `GET` | `/v1/spaces` | `{ limit? }` | `{ spaces, cross_shard_complete }` — `cross_shard_complete` is false when a shard did not answer |
+| `DELETE` | `/v1/spaces` | — | `{ space, existed, memories_forgotten }` — **erases the caller's own space** — there is no id to pass |
 
 ⚠️ **`DELETE /v1/spaces` erases the caller's whole workspace.** There is no id
 to get wrong and no id to get right — it acts on whichever space the credential
@@ -140,16 +140,16 @@ resolves to. `whoami` is the way to check which one that is first.
 
 | Method | Path                 | Body / query                  | Returns |
 | ------ | -------------------- | ----------------------------- | ------- |
-| `POST` | `/v1/query/explain`  | `{ text, max_results? }`      | the plan and its estimated cost, **without running the query** |
-| `POST` | `/v1/query/trace`    | `{ text, max_results? }`      | what each stage actually cost — note this **runs** the query; it is not the free counterpart to `explain` |
+| `POST` | `/v1/query/explain` | `{ text, entity_anchor?, kinds?, predicates?, sessions?, time_range?, as_of_record_time_unix_nanos?, confidence_min?, include_tombstoned?, include_superseded?, limit?, retrievers?, fusion? }` | `{ plan_text, estimated_cost_ms }` — the plan and its estimated cost, **without running the query** |
+| `POST` | `/v1/query/trace` | `{ text, entity_anchor?, kinds?, predicates?, sessions?, time_range?, as_of_record_time_unix_nanos?, confidence_min?, include_tombstoned?, include_superseded?, limit?, retrievers?, fusion? }` | `{ trace_text, total_latency_ms }` — what each stage actually cost — note this **runs** the query |
 
 ### Procedural, direct vectors, change feed
 
 | Method | Path                            | Body / query                                     | Returns |
 | ------ | ------------------------------- | ------------------------------------------------ | ------- |
-| `POST` | `/v1/procedural/materialize`    | `top_k?`, `min_confidence?`, `categories?`       | the workspace's learned standing instructions as a system-prompt block, with the statement ids behind each line |
-| `POST` | `/v1/memories/vector`           | `{ vector, text?, context?, occurred_at? }`      | same shape as `POST /v1/memories` — for a caller that computed its own embedding |
-| `GET`  | `/v1/subscribe`                 | `spaces?`, `kinds?`                              | **Server-Sent Events**: one `SubscriptionEventDto` per change as it lands |
+| `POST` | `/v1/procedural/materialize` | — | `{ system_block, statement_ids, total_candidates, trimmed_by_budget }` — the learned standing instructions, with the statement ids behind each line |
+| `POST` | `/v1/memories/vector` | `{ text, vector, model_fingerprint, session?, kind?, salience_hint?, deduplicate? }` | `{ memory_id, was_deduplicated, salience, kind, created_at_unix_nanos, auto_edges_added }` — same shape as `POST /v1/memories` |
+| `GET` | `/v1/subscribe` | `{ sessions?, kinds?, memories?, include_history?, from_lsn?, max_inflight? }` | `{ event_type, memory_id, session_id, text, kind, salience, timestamp_unix_nanos, lsn, graph, edge, stage_kind, stage_outcome, stage }` — **Server-Sent Events**: one event per change as it lands |
 
 `POST /v1/memories/vector` bypasses the edge's own embedding step, so the
 vector's dimension must match what `/v1/capabilities` reports as `vector_dim`;
@@ -162,11 +162,11 @@ and write-only: nothing here returns the key itself.
 
 | Method   | Path                          | Body / query                        | Returns |
 | -------- | ----------------------------- | ----------------------------------- | ------- |
-| `PUT`    | `/v1/llm-credential`          | `{ provider, api_key, model? }`     | `{ provider, model, fingerprint, registered_at_unix_nanos }` — a display fingerprint, never the key |
-| `GET`    | `/v1/llm-credential`          | —                                   | the same shape, or `404` when the namespace has none |
-| `DELETE` | `/v1/llm-credential`          | —                                   | `{ provider, deleted }` |
-| `POST`   | `/v1/llm-credential/test`     | `{ provider, api_key, model? }`     | `{ ok, provider, model, detail? }` — checks a candidate key **without storing it** |
-| `POST`   | `/v1/llm-credential/verify`   | —                                   | the same shape, for the key already stored |
+| `PUT` | `/v1/llm-credential` | `{ provider, model, api_key }` | `{ provider, model, fingerprint, created_at_unix_secs }` — a display fingerprint, never the key |
+| `GET` | `/v1/llm-credential` | — | `{ provider, model, fingerprint, created_at_unix_secs }` — or `404` when the namespace has none |
+| `DELETE` | `/v1/llm-credential` | — | `{ deleted }` |
+| `POST` | `/v1/llm-credential/test` | `{ provider, model, api_key }` | `{ status, valid, reason, provider }` — checks a candidate key **without storing it** |
+| `POST` | `/v1/llm-credential/verify` | — | `{ status, valid, reason, provider }` — the same shape, for the key already stored |
 
 ⚠️ `PUT` and `/test` carry a **raw provider key in the request body**. Deleting
 the credential stops every write in the namespace, because extraction and HyPE
