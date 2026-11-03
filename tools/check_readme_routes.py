@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when the README's API tables and the router disagree about routes.
+"""Fail when the README and the source disagree about routes or env vars.
 
 The README's `## API` section is the human-readable half of the same contract
 `http_manifest.py` emits for the three SDK clients, and nothing connected the
@@ -17,6 +17,14 @@ The route set comes from `http_manifest.py`, so this agrees with what the SDKs
 check themselves against rather than re-parsing the router a second way. The
 two health probes live in `src/lib.rs` outside the manifest's scope and are
 listed here.
+
+The env table had the same problem and I did not notice while fixing the
+routes: it documented 10 of 16 variables, and the six it omitted were the
+credential-plane and key-encryption ones — `BRAIN_EDGE_PLANE`,
+`BRAIN_EDGE_LLM_CREDENTIAL_FILE`, `BRAIN_EDGE_LLM_KEKS`,
+`BRAIN_EDGE_LLM_KEK_CURRENT`, `BRAIN_EDGE_LLM_PROXY_TOKEN`. A route check that
+leaves the security-relevant configuration undocumented is half a gate, so
+both now run here.
 
     tools/check_readme_routes.py           # from the repo root
 """
@@ -60,6 +68,49 @@ def served() -> set[tuple[str, str]]:
     return {(r["method"].upper(), r["path"]) for r in manifest["routes"]} | HEALTH
 
 
+# Read by the code but not configuration: a fixture for the "unset" path.
+ENV_IGNORED = {"BRAIN_EDGE_TEST_DEFINITELY_UNSET_KEY"}
+# Documented in the table but owned by the logging crate, not this source.
+ENV_EXTERNAL = {"RUST_LOG"}
+
+
+def documented_env() -> set[str]:
+    """Variables the README's configuration table declares."""
+    pattern = re.compile(r"^\|\s*`(BRAIN[A-Z_]*)`")
+    out: set[str] = set()
+    for line in (ROOT / "README.md").read_text().splitlines():
+        m = pattern.match(line.strip())
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def read_env() -> set[str]:
+    """Variables the source actually reads."""
+    pattern = re.compile(r'"(BRAIN(?:_EDGE)?[A-Z_]*)"')
+    out: set[str] = set()
+    for path in (ROOT / "src").rglob("*.rs"):
+        out.update(pattern.findall(path.read_text()))
+    return out - ENV_IGNORED
+
+
+def check_env() -> bool:
+    """True when the env table and the source agree. Prints either way."""
+    doc, live = documented_env() - ENV_EXTERNAL, read_env()
+    undocumented = sorted(live - doc)
+    phantom = sorted(doc - live)
+    print(f"source reads {len(live)} env vars; README documents {len(doc)}")
+    if undocumented:
+        print(f"\n{len(undocumented)} env var(s) read with no README row:")
+        for name in undocumented:
+            print(f"    {name}")
+    if phantom:
+        print(f"\n{len(phantom)} README row(s) for env vars nothing reads:")
+        for name in phantom:
+            print(f"    {name}")
+    return not (undocumented or phantom)
+
+
 def main() -> int:
     doc, live = documented(), served()
     undocumented = sorted(live - doc)
@@ -76,11 +127,18 @@ def main() -> int:
         for method, path in phantom:
             print(f"    {method:6} {path}")
 
-    if undocumented or phantom:
+    routes_ok = not (undocumented or phantom)
+    if not routes_ok:
         print("\nThe README's API tables and the router disagree.")
-        return 1
-    print("README documents every served route, and no others.")
-    return 0
+    else:
+        print("README documents every served route, and no others.")
+
+    print()
+    env_ok = check_env()
+    if env_ok:
+        print("README documents every env var the source reads, and no others.")
+
+    return 0 if (routes_ok and env_ok) else 1
 
 
 if __name__ == "__main__":

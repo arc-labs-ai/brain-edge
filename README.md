@@ -198,6 +198,11 @@ with the key Brain already holds instead of being given one. Not part of the
 | `BRAIN_EDGE_WIRE_LISTEN`        | unset            | Wire-proxy listen address — `ip:port` or `host:port`. **Unset = the wire proxy is off**, HTTP only |
 | `BRAIN_EDGE_WIRE_RATE_CAPACITY` | `0`              | Per-credential token-bucket burst on the wire proxy (`0` = no limit) |
 | `BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC` | `0`        | Per-credential refill rate, ops/sec (`0` = no limit) |
+| `BRAIN_EDGE_PLANE`              | `both`           | Which plane this process serves — `both`, `data` (memory verbs only; **no key material is reachable in this process**), or `credential` (BYOK management + broker only). An unrecognised value is a hard error, not a silent fallback to `both` |
+| `BRAIN_EDGE_LLM_CREDENTIAL_FILE` | unset           | Path to a durable BYOK credential file. **Unset = the store is in-memory**, so registered keys do not survive a restart |
+| `BRAIN_EDGE_LLM_KEKS`           | unset            | Key-encryption keys as `id:hex,id:hex,…`. Unset = BYOK is not configured. Never held on a config struct — read once into the key ring so key material cannot reach a `Debug` print or a startup log |
+| `BRAIN_EDGE_LLM_KEK_CURRENT`    | unset            | Which KEK id new seals use. Optional with exactly one key, where the id is unambiguous; **required with several** — guessing which key to seal under is not a safe default |
+| `BRAIN_EDGE_LLM_PROXY_TOKEN`    | unset            | Bearer the LLM broker plane requires on `/llm/ns/...`, i.e. Brain's own identity to this edge |
 | `RUST_LOG`                      | `brain_edge=info`| Log filter                                          |
 
 ## What a failing request looks like
