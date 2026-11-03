@@ -63,11 +63,29 @@ relation and statement ids are **UUID strings**.
 | `GET`  | `/v1/relations/{id}`             | `follow_supersession?` (default `true`)                                      | the relation, or the head of its supersession chain |
 | `GET`  | `/v1/statements`                 | `subject?`, `predicate?`, `kind?`, `min_confidence?`, `only_current?` (default `true`), `include_tombstoned?`, `limit?` | `{ statements: [...], count }` |
 | `GET`  | `/v1/statements/{id}`            | `follow_supersession?` (default `true`)                                      | the statement, or the head of its supersession chain |
+| `PUT`  | `/v1/entities/{id}`              | `{ canonical_name, aliases?, attributes? }`                                  | the updated entity — a **wholesale** replace: an omitted `aliases` clears them |
+| `POST` | `/v1/entities/{id}/rename`       | `{ new_canonical_name, move_to_alias? }`                                     | the updated entity — keeps the old name as an alias by default, which is how a mention in older text still resolves |
+| `POST` | `/v1/entities/{id}/merge`        | `{ merged, confidence?, reason? }`                                           | `{ audit_id, grace_period_seconds }` — folds `merged` into `{id}`; not symmetric |
+| `POST` | `/v1/entities/{id}/unmerge`      | —                                                                            | `{ restored_entity_id }` — pass the **absorbed** id, not the survivor's |
+| `DELETE` | `/v1/entities/{id}`            | `reason?`                                                                    | `{ tombstoned_at_unix_nanos }` |
+| `POST` | `/v1/statements`                 | `{ kind, subject, predicate, object, confidence?, event_at_unix_nanos?, valid_from_unix_nanos?, valid_to_unix_nanos?, extractor_id?, schema_version?, session_id?, evidence? }` | `{ statement_id, auto_superseded, chain_root }` |
+| `POST` | `/v1/statements/{id}/supersede`  | `{ statement }`                                                              | `{ new_statement_id, chain_root, version }` — keeps both and the link between them |
+| `POST` | `/v1/statements/{id}/retract`    | `reason?`, `message?`                                                        | `{ retracted_at_unix_nanos, will_zero_at_unix_nanos }` — the **content** does not survive |
+| `DELETE` | `/v1/statements/{id}`          | `reason?`, `message?`                                                        | `{ tombstoned_at_unix_nanos }` — soft; the row survives for audit |
+| `GET`  | `/v1/statements/{id}/history`    | `limit?`, `cursor?`                                                          | `{ items, chain_root, total_versions, next_cursor }` — the supersession chain, oldest first |
+| `POST` | `/v1/relations`                  | `{ relation_type, from_entity, to_entity, confidence?, valid_from_unix_nanos?, valid_to_unix_nanos?, extractor_id?, session_id?, evidence?, properties? }` | `{ relation_id }` |
+| `POST` | `/v1/relations/{id}/supersede`   | `{ relation }`                                                               | `{ new_relation_id, version }` — `properties` is replaced, not merged |
+| `DELETE` | `/v1/relations/{id}`           | `reason?`                                                                    | `{ tombstoned_at_unix_nanos }` — traversals stop crossing it |
 | `GET`  | `/v1/graph`                      | `limit?` (≤500, default 200), `cursor?`, `include_statements?`, `include_memories?`, `include_memory_edges?`, `include_tombstoned?` | `{ nodes, edges, next_cursor? }` — a paged node/edge export |
 
 `include_memory_edges` requires `include_memories`; asking for it alone returns
 `400` rather than a relayed wire error, because the edges' endpoints wouldn't be
 in the page.
+
+Predicates and relation types are always `namespace:name` — `acme:prefers`,
+never `prefers`. A bare name is rejected. Supersede rather than delete when
+something changed: `DELETE` keeps the row for audit but loses the history of
+having believed it, and `retract` destroys the content outright.
 
 ### Schema
 
@@ -77,6 +95,9 @@ in the page.
 | `POST` | `/v1/schema`          | `{ schema_document, dry_run?, allow_breaking? }` | `{ namespace, schema_version, backward_compatible, validation_errors }` |
 | `POST` | `/v1/schema/validate` | `{ schema_document }`                          | `{ namespace, would_be_version, validation_errors }` — never touches storage |
 | `PUT`  | `/v1/schema`          | `{ schema_document, force_drop_existing }`     | `{ namespace, schema_version, dropped_count, validation_errors }` |
+| `GET`  | `/v1/schemas`         | `limit?`, `cursor?`                            | `{ namespace, items, total, next_cursor }` — the version history, as opposed to `/v1/schema`'s one active document |
+| `DELETE` | `/v1/schema/{kind}/{name}` | `force?`                                  | `{ namespace, schema_version, target_kind, target_name, dropped, live_rows, validation_errors }` |
+| `GET`  | `/v1/extractors`      | —                                              | `{ items, total }` — what reads a new memory and what it may produce |
 
 `POST` **merges** into the active schema — additive and versioned. A
 `schema_version` of `0` in the reply means the upload was rejected: either
@@ -90,9 +111,78 @@ must be `true`; the edge returns `400` naming the field otherwise, so an empty
 body can't reach an irreversible operation. `PUT` rather than `POST` because the
 method difference is the clearest available signal that this one is not additive.
 
-Listing schema *versions* is not exposed: it's a streaming verb, and the edge
-either flattens streaming verbs or omits them rather than half-exposing them.
-It's operator introspection against the admin listener, not a data-plane call.
+`DELETE /v1/schema/{kind}/{name}` removes one declared `predicate` or
+`relation_type` — the only two droppable kinds. `force` is not a confirmation
+flag: it consents specifically to orphaning live rows, and `live_rows` reports
+how many it did.
+
+### Sessions and spaces
+
+A **space** is the per-request isolation unit; a **session** groups one
+conversation's memories inside it. No space verb takes a path parameter,
+because all three act on the caller's *own* space — resolved from the
+credential, never named in the request.
+
+| Method   | Path                | Body / query        | Returns |
+| -------- | ------------------- | ------------------- | ------- |
+| `POST`   | `/v1/sessions`      | `{ session_id, title? }` | `{ session_id, created, created_at_unix_nanos }` — idempotent on the id you choose |
+| `GET`    | `/v1/sessions`      | `limit?`            | `{ space_id, sessions, count }` |
+| `DELETE` | `/v1/sessions/{id}` | `hard?`             | `{ session_id, erased, memories_removed }` — soft by default, which leaves the memories in place |
+| `POST`   | `/v1/spaces`        | —                   | `{ space, created, created_at_unix_nanos }` |
+| `GET`    | `/v1/spaces`        | `limit?`            | `{ spaces, count }` |
+| `DELETE` | `/v1/spaces`        | `hard?`             | `{ space, erased, memories_removed }` |
+
+⚠️ **`DELETE /v1/spaces` erases the caller's whole workspace.** There is no id
+to get wrong and no id to get right — it acts on whichever space the credential
+resolves to. `whoami` is the way to check which one that is first.
+
+### Query introspection
+
+| Method | Path                 | Body / query                  | Returns |
+| ------ | -------------------- | ----------------------------- | ------- |
+| `POST` | `/v1/query/explain`  | `{ text, max_results? }`      | the plan and its estimated cost, **without running the query** |
+| `POST` | `/v1/query/trace`    | `{ text, max_results? }`      | what each stage actually cost — note this **runs** the query; it is not the free counterpart to `explain` |
+
+### Procedural, direct vectors, change feed
+
+| Method | Path                            | Body / query                                     | Returns |
+| ------ | ------------------------------- | ------------------------------------------------ | ------- |
+| `POST` | `/v1/procedural/materialize`    | `top_k?`, `min_confidence?`, `categories?`       | the workspace's learned standing instructions as a system-prompt block, with the statement ids behind each line |
+| `POST` | `/v1/memories/vector`           | `{ vector, text?, context?, occurred_at? }`      | same shape as `POST /v1/memories` — for a caller that computed its own embedding |
+| `GET`  | `/v1/subscribe`                 | `spaces?`, `kinds?`                              | **Server-Sent Events**: one `SubscriptionEventDto` per change as it lands |
+
+`POST /v1/memories/vector` bypasses the edge's own embedding step, so the
+vector's dimension must match what `/v1/capabilities` reports as `vector_dim`;
+a mismatch is a `400`.
+
+### BYOK LLM credential
+
+The provider key Brain uses for extraction and HyPE on write. Per namespace,
+and write-only: nothing here returns the key itself.
+
+| Method   | Path                          | Body / query                        | Returns |
+| -------- | ----------------------------- | ----------------------------------- | ------- |
+| `PUT`    | `/v1/llm-credential`          | `{ provider, api_key, model? }`     | `{ provider, model, fingerprint, registered_at_unix_nanos }` — a display fingerprint, never the key |
+| `GET`    | `/v1/llm-credential`          | —                                   | the same shape, or `404` when the namespace has none |
+| `DELETE` | `/v1/llm-credential`          | —                                   | `{ provider, deleted }` |
+| `POST`   | `/v1/llm-credential/test`     | `{ provider, api_key, model? }`     | `{ ok, provider, model, detail? }` — checks a candidate key **without storing it** |
+| `POST`   | `/v1/llm-credential/verify`   | —                                   | the same shape, for the key already stored |
+
+⚠️ `PUT` and `/test` carry a **raw provider key in the request body**. Deleting
+the credential stops every write in the namespace, because extraction and HyPE
+are mandatory rather than optional enrichment.
+
+### LLM broker (proxy plane)
+
+A pass-through to the namespace's own provider, so an agent can reach a model
+with the key Brain already holds instead of being given one. Not part of the
+`/v1` data plane — these keep the provider's own request and response shapes.
+
+| Method | Path                                             | Body / query            | Returns |
+| ------ | ------------------------------------------------ | ----------------------- | ------- |
+| `GET`  | `/llm/ns/{namespace}/resolve`                    | —                       | `{ provider, model, source }` — which provider a namespace resolves to |
+| `POST` | `/llm/ns/{namespace}/openai/v1/chat/completions` | the provider's own body | the provider's own response, streamed through unchanged |
+| `POST` | `/llm/ns/{namespace}/anthropic/v1/messages`      | the provider's own body | the provider's own response, streamed through unchanged |
 
 ## Configuration (env)
 
