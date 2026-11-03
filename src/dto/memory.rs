@@ -407,7 +407,7 @@ impl MemoryListPageDto {
 /// on this edge (`/v1/entities/{id}`, `/v1/statements/{id}`,
 /// `/v1/relations/{id}`). No special handling here produces that: Brain
 /// answers `MemoryNotFound` in the `NotFound` category and
-/// [`ApiError::from_brain`] maps the category, exactly as it does for the
+/// [`crate::error::ApiError::from_brain`] maps the category, exactly as it does for the
 /// siblings.
 ///
 /// An existing memory whose artifact bundle has not been written yet is a

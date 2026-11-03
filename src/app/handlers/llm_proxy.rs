@@ -201,7 +201,7 @@ fn authenticate_with(configured: Option<&str>, headers: &HeaderMap) -> Result<()
 /// `POST /llm/openai/v1/chat/completions`
 ///
 /// # Errors
-/// See [`proxy`].
+/// Shares the private `proxy` helper below with `anthropic_messages`.
 pub async fn openai_chat_completions(
     State(state): State<EdgeState>,
     axum::extract::Path(namespace): axum::extract::Path<String>,
@@ -222,7 +222,7 @@ pub async fn openai_chat_completions(
 /// `POST /llm/anthropic/v1/messages`
 ///
 /// # Errors
-/// See [`proxy`].
+/// Shares the private `proxy` helper below with `openai_chat_completions`.
 pub async fn anthropic_messages(
     State(state): State<EdgeState>,
     axum::extract::Path(namespace): axum::extract::Path<String>,

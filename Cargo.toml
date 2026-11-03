@@ -117,6 +117,25 @@ missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
+# ---------------------------------------------------------------------------
+# rustdoc.
+#
+# docs.rs is where a reader meets this crate, and nothing was checking it. Six
+# warnings had accumulated: four links to private items, which rustdoc renders
+# as no link at all, and one unresolved `ApiError::from_brain` that was simply
+# missing its path. Each sent a reader somewhere that does not exist.
+#
+# `all` denies the whole group, affordable because the group is clean today —
+# measured with `-W rustdoc::all`, not assumed. Declared here rather than only
+# as RUSTDOCFLAGS in CI so one definition covers `cargo doc`, CI and
+# rust-analyzer. CI still needs its own `cargo doc` step: these levels cannot
+# fire in a workflow that never invokes rustdoc, which is exactly how six got
+# in.
+# ---------------------------------------------------------------------------
+
+[lints.rustdoc]
+all = { level = "deny", priority = -1 }
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }

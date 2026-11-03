@@ -17,12 +17,12 @@
 //! So an over-cap body is read and discarded before the refusal is written.
 //! Both bounds on that drain are deliberate:
 //!
-//! - **Bytes** ([`DRAIN_BUDGET_FACTOR`]) — draining costs this side almost
+//! - **Bytes** (`DRAIN_BUDGET_FACTOR`) — draining costs this side almost
 //!   nothing in bandwidth, since the bytes are already on the wire whether or
 //!   not they are read. What it does cost is holding a connection open for a
 //!   body that will be thrown away, so a body far past the cap is not humoured:
 //!   it is not a near miss, it is a client that was never going to succeed.
-//! - **Time** ([`DRAIN_DEADLINE`]) — the byte budget alone bounds nothing
+//! - **Time** (`DRAIN_DEADLINE`) — the byte budget alone bounds nothing
 //!   against a client that sends those bytes one per second.
 //!
 //! Past either bound the drain is abandoned and the reset stands. That is the
