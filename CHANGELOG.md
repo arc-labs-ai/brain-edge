@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.1...v0.4.2) (2026-11-04)
+
+
+### Documentation
+
+* document the credential-plane env vars, and fix field lists I got wrong ([#22](https://github.com/arc-labs-ai/brain-edge/issues/22)) ([35b7ac6](https://github.com/arc-labs-ai/brain-edge/commit/35b7ac61faeb9350fbd4c1f2571e3db5f909c98d))
+
 ## [0.4.1](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.0...v0.4.1) (2026-11-03)
 
 
