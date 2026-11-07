@@ -45,7 +45,7 @@ pub async fn upload(
     headers: HeaderMap,
     Json(body): Json<SchemaUploadBody>,
 ) -> Result<Json<SchemaUploadDto>, ApiError> {
-    let mut req = body.to_request();
+    let mut req = body.to_request()?;
     let ident = state.resolve(&headers).await?;
     state.admit("upload_schema", &ident).await?;
     ident.scope(&mut req);

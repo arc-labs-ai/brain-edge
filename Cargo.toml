@@ -76,7 +76,20 @@ arc-swap = "1"
 # relays so a failed HyPE stage can say why. The bump is required, not
 # cosmetic: `"0.3.0"` is a caret requirement and will not resolve into 0.4.x,
 # so the field would simply not exist here.
-brain-db-sdk = "0.4.0"
+#
+# 0.4.4 adds `scope` to `SchemaUploadRequest` — where a declaration lands, the
+# namespace base or an overlay at the caller's space. The floor is REQUIRED,
+# not cosmetic: the field has no serde default on either side, so 0.4.0..0.4.3
+# encode a SCHEMA_UPLOAD the current server refuses to decode at all, and
+# `to_request()` below does not compile without it.
+#
+# Note what a patch-level floor means here, because it cuts the other way to
+# the 0.4.0 note above. `"0.4.0"` is >=0.4.0, <0.5.0, so it would have
+# resolved into 0.4.4 on the next `cargo update` and broken this crate with no
+# edit — a required field added inside a caret range is a source break that
+# the requirement cannot warn about. Stating the floor is what makes the
+# dependency honest about which versions actually work.
+brain-db-sdk = "0.4.4"
 
 # ---------------------------------------------------------------------------
 # Lints.

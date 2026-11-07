@@ -20,10 +20,13 @@
 use brain_db_sdk::wire::types::{
     ExtractorListRequest, ExtractorListResponseFrame, SchemaDropRequest, SchemaDropResponse,
     SchemaGetRequest, SchemaGetResponse, SchemaListRequest, SchemaListResponseFrame,
-    SchemaReplaceRequest, SchemaReplaceResponse, SchemaUploadRequest, SchemaUploadResponse,
-    SchemaValidateRequest, SchemaValidateResponse, SchemaValidationErrorWire, schema_drop_target,
+    SchemaReplaceRequest, SchemaReplaceResponse, SchemaScope, SchemaUploadRequest,
+    SchemaUploadResponse, SchemaValidateRequest, SchemaValidateResponse, SchemaValidationErrorWire,
+    schema_drop_target,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::error::ApiError;
 
 use super::{hex_decode, hex_encode};
 
@@ -91,6 +94,17 @@ pub struct SchemaUploadBody {
     /// Permit a backward-incompatible change.
     #[serde(default)]
     pub allow_breaking: bool,
+    /// Where this document declares: `"namespace"` (the default — the
+    /// tenant's base, which every space resolves) or `"space"` (an overlay at
+    /// the caller's effective space, which only that space resolves).
+    /// Case-insensitive; anything else is rejected.
+    ///
+    /// Deliberately NOT inferred from the effective space. Nearly every
+    /// request names a space, so inferring the scope from it would silently
+    /// turn every ordinary namespace-wide upload into a per-space overlay
+    /// invisible to the tenant's other spaces.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// `POST /v1/schema` response.
@@ -199,15 +213,32 @@ impl SchemaGetQuery {
 
 impl SchemaUploadBody {
     /// Build the wire request (mints a fresh `request_id`).
-    #[must_use]
-    pub fn to_request(self) -> SchemaUploadRequest {
-        SchemaUploadRequest {
+    ///
+    /// Fallible because `scope` arrives as free text: an unrecognised value is
+    /// refused here rather than silently narrowed to the namespace base, which
+    /// would publish into the shared base a document the caller meant to keep
+    /// to one space.
+    pub fn to_request(self) -> Result<SchemaUploadRequest, ApiError> {
+        let scope = match self.scope.as_deref() {
+            None => SchemaScope::Namespace,
+            Some(s) => match s.to_ascii_lowercase().as_str() {
+                "namespace" => SchemaScope::Namespace,
+                "space" => SchemaScope::Space,
+                other => {
+                    return Err(ApiError::bad_request(format!(
+                        "scope must be \"namespace\" or \"space\", got {other:?}"
+                    )));
+                }
+            },
+        };
+        Ok(SchemaUploadRequest {
             schema_document: self.schema_document,
             dry_run: self.dry_run,
             allow_breaking: self.allow_breaking,
             request_id: brain_db_sdk::new_id(),
             act_as: None,
-        }
+            scope,
+        })
     }
 }
 
@@ -277,18 +308,61 @@ mod schema_tests {
             schema_document: "entity P {}".into(),
             dry_run: true,
             allow_breaking: true,
+            scope: None,
         }
-        .to_request();
+        .to_request()
+        .expect("no scope is the namespace base");
         assert_eq!(up.schema_document, "entity P {}");
         assert!(up.dry_run);
         assert!(up.allow_breaking);
         assert_ne!(up.request_id, [0u8; 16]); // a fresh id was minted
+        // An omitted scope declares at the namespace base. It is NOT inferred
+        // from the effective space, which almost every request names.
+        assert_eq!(up.scope, SchemaScope::Namespace);
 
         let val = SchemaValidateBody {
             schema_document: "entity Q {}".into(),
         }
         .to_request();
         assert_eq!(val.schema_document, "entity Q {}");
+    }
+
+    #[test]
+    fn upload_scope_is_parsed_case_insensitively() {
+        for (text, want) in [
+            ("space", SchemaScope::Space),
+            ("SPACE", SchemaScope::Space),
+            ("Namespace", SchemaScope::Namespace),
+            ("namespace", SchemaScope::Namespace),
+        ] {
+            let req = SchemaUploadBody {
+                schema_document: "entity P {}".into(),
+                dry_run: false,
+                allow_breaking: false,
+                scope: Some(text.into()),
+            }
+            .to_request()
+            .unwrap_or_else(|_| panic!("{text} is a valid scope"));
+            assert_eq!(req.scope, want, "scope {text:?}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_upload_scope_is_refused_not_narrowed() {
+        // Narrowing an unknown value to the base would publish into the
+        // shared namespace a document the caller meant to keep to one space.
+        let err = SchemaUploadBody {
+            schema_document: "entity P {}".into(),
+            dry_run: false,
+            allow_breaking: false,
+            scope: Some("tenant".into()),
+        }
+        .to_request()
+        .expect_err("an unknown scope must be refused");
+        assert!(
+            format!("{err:?}").contains("tenant"),
+            "the error names the value it rejected: {err:?}"
+        );
     }
 
     #[test]
