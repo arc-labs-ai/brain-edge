@@ -24,8 +24,8 @@
 use brain_db_sdk::wire::types::{
     ActAs, EncodeRequest, EncodeVectorDirectRequest, EntityCreateRequest, EntityGetRequest,
     EntityListRequest, EntityMergeRequest, EntityRenameRequest, EntityResolveRequest,
-    EntityTombstoneRequest, EntityUnmergeRequest, EntityUpdateRequest, ExtractorListRequest,
-    ForgetRequest, GetCapabilitiesRequest, GraphFetchRequest, LinkRequest,
+    EntityTombstoneRequest, EntityTypeListRequest, EntityUnmergeRequest, EntityUpdateRequest,
+    ExtractorListRequest, ForgetRequest, GetCapabilitiesRequest, GraphFetchRequest, LinkRequest,
     MaterializeProceduralRequest, MemoryInspectRequest, MemoryListRequest, PlanRequest,
     QueryExplainRequest, QueryTraceRequest, ReasonRequest, RecallRequest, RelationCreateRequest,
     RelationGetRequest, RelationListFromRequest, RelationListToRequest, RelationSupersedeRequest,
@@ -127,6 +127,7 @@ impl_scoped!(
     StatementHistoryRequest,
     RelationSupersedeRequest,
     RelationTombstoneRequest,
+    EntityTypeListRequest,
     ExtractorListRequest,
     QueryExplainRequest,
     QueryTraceRequest,

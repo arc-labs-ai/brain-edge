@@ -20,6 +20,7 @@ use axum::http::HeaderMap;
 use axum::response::Json;
 use brain_db_sdk::wire::types::GetCapabilitiesRequest;
 
+use crate::app::extract::ApiJson;
 use crate::app::handlers::llm_proxy::{KeyCheck, Upstream};
 use crate::crypto::SecretBinding;
 use crate::dto::llm_credential::{
@@ -70,7 +71,7 @@ fn store_of(state: &EdgeState) -> Result<&std::sync::Arc<dyn LlmCredentialStore>
 pub async fn put(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<PutLlmCredentialRequest>,
+    ApiJson(body): ApiJson<PutLlmCredentialRequest>,
 ) -> Result<Json<LlmCredentialDto>, ApiError> {
     let provider = body.validate().map_err(ApiError::bad_request)?;
     // `validate()` already proved this is a provider we serve, so the lookup
@@ -195,7 +196,7 @@ async fn probe(provider: &str, key: &str) -> Result<Json<LlmCredentialCheckDto>,
 pub async fn test(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<PutLlmCredentialRequest>,
+    ApiJson(body): ApiJson<PutLlmCredentialRequest>,
 ) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
     let provider = body.validate().map_err(ApiError::bad_request)?;
     // Gated on BYOK being configured even though nothing is stored: an edge

@@ -20,10 +20,13 @@
 use brain_db_sdk::wire::types::{
     ExtractorListRequest, ExtractorListResponseFrame, SchemaDropRequest, SchemaDropResponse,
     SchemaGetRequest, SchemaGetResponse, SchemaListRequest, SchemaListResponseFrame,
-    SchemaReplaceRequest, SchemaReplaceResponse, SchemaUploadRequest, SchemaUploadResponse,
-    SchemaValidateRequest, SchemaValidateResponse, SchemaValidationErrorWire, schema_drop_target,
+    SchemaReplaceRequest, SchemaReplaceResponse, SchemaScope, SchemaUploadRequest,
+    SchemaUploadResponse, SchemaValidateRequest, SchemaValidateResponse, SchemaValidationErrorWire,
+    schema_drop_target,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::error::ApiError;
 
 use super::{hex_decode, hex_encode};
 
@@ -91,6 +94,17 @@ pub struct SchemaUploadBody {
     /// Permit a backward-incompatible change.
     #[serde(default)]
     pub allow_breaking: bool,
+    /// Where this document declares: `"namespace"` (the default — the
+    /// tenant's base, which every space resolves) or `"space"` (an overlay at
+    /// the caller's effective space, which only that space resolves).
+    /// Case-insensitive; anything else is rejected.
+    ///
+    /// Deliberately NOT inferred from the effective space. Nearly every
+    /// request names a space, so inferring the scope from it would silently
+    /// turn every ordinary namespace-wide upload into a per-space overlay
+    /// invisible to the tenant's other spaces.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// `POST /v1/schema` response.
@@ -118,6 +132,15 @@ impl From<SchemaUploadResponse> for SchemaUploadDto {
 #[derive(Debug, Deserialize)]
 pub struct SchemaValidateBody {
     pub schema_document: String,
+    /// Which scope this operation applies at: `"namespace"` (the default —
+    /// the tenant's base, which every space resolves) or `"space"` (an
+    /// overlay at the caller's effective space, which only that space
+    /// resolves). Case-insensitive; anything else is rejected.
+    ///
+    /// Deliberately NOT inferred from the effective space — see
+    /// [`parse_scope`].
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// `POST /v1/schema/validate` response.
@@ -150,6 +173,15 @@ impl From<SchemaValidateResponse> for SchemaValidateDto {
 pub struct SchemaReplaceBody {
     pub schema_document: String,
     pub force_drop_existing: bool,
+    /// Which scope this operation applies at: `"namespace"` (the default —
+    /// the tenant's base, which every space resolves) or `"space"` (an
+    /// overlay at the caller's effective space, which only that space
+    /// resolves). Case-insensitive; anything else is rejected.
+    ///
+    /// Deliberately NOT inferred from the effective space — see
+    /// [`parse_scope`].
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// `PUT /v1/schema` response.
@@ -197,27 +229,68 @@ impl SchemaGetQuery {
     }
 }
 
+/// Parse the free-text `scope` field the schema verbs accept.
+///
+/// Fallible on purpose: an unrecognised value is refused rather than
+/// silently narrowed to the namespace base, which would apply to the shared
+/// base an operation the caller meant to keep to one space.
+///
+/// Absent means the namespace base. The scope is NEVER inferred from the
+/// caller's effective space: nearly every request names a space, so
+/// inferring it would turn every ordinary namespace-wide operation into a
+/// per-space one invisible to the tenant's other spaces.
+///
+/// # Errors
+/// [`ApiError::bad_request`] for anything but `"namespace"` or `"space"`.
+pub fn parse_scope(scope: Option<&str>) -> Result<SchemaScope, ApiError> {
+    match scope {
+        None => Ok(SchemaScope::Namespace),
+        Some(s) => match s.to_ascii_lowercase().as_str() {
+            "namespace" => Ok(SchemaScope::Namespace),
+            "space" => Ok(SchemaScope::Space),
+            other => Err(ApiError::bad_request(format!(
+                "scope must be \"namespace\" or \"space\", got {other:?}"
+            ))),
+        },
+    }
+}
+
 impl SchemaUploadBody {
     /// Build the wire request (mints a fresh `request_id`).
-    #[must_use]
-    pub fn to_request(self) -> SchemaUploadRequest {
-        SchemaUploadRequest {
+    ///
+    /// Fallible because `scope` arrives as free text: an unrecognised value is
+    /// refused here rather than silently narrowed to the namespace base, which
+    /// would publish into the shared base a document the caller meant to keep
+    /// to one space.
+    pub fn to_request(self) -> Result<SchemaUploadRequest, ApiError> {
+        let scope = parse_scope(self.scope.as_deref())?;
+        Ok(SchemaUploadRequest {
             schema_document: self.schema_document,
             dry_run: self.dry_run,
             allow_breaking: self.allow_breaking,
             request_id: brain_db_sdk::new_id(),
             act_as: None,
-        }
+            scope,
+        })
     }
 }
 
 impl SchemaValidateBody {
-    #[must_use]
-    pub fn to_request(self) -> SchemaValidateRequest {
-        SchemaValidateRequest {
+    /// Build the wire request.
+    ///
+    /// Fallible now that a scope is carried: VALIDATE predicts UPLOAD, so it
+    /// resolves references against the scope the upload would land in, and an
+    /// unrecognised scope must be refused rather than narrowed.
+    ///
+    /// # Errors
+    /// [`ApiError::bad_request`] for an unrecognised `scope`.
+    pub fn to_request(self) -> Result<SchemaValidateRequest, ApiError> {
+        let scope = parse_scope(self.scope.as_deref())?;
+        Ok(SchemaValidateRequest {
             schema_document: self.schema_document,
             act_as: None,
-        }
+            scope,
+        })
     }
 }
 
@@ -227,19 +300,20 @@ impl SchemaReplaceBody {
     /// Rejects `force_drop_existing = false` here rather than forwarding it:
     /// Brain answers that with `InvalidRequest`, and a 400 naming the field is
     /// a far better answer than a relayed protocol error.
-    pub fn to_request(self) -> Result<SchemaReplaceRequest, String> {
+    pub fn to_request(self) -> Result<SchemaReplaceRequest, ApiError> {
         if !self.force_drop_existing {
-            return Err(
+            return Err(ApiError::bad_request(
                 "force_drop_existing must be true — PUT /v1/schema drops every declared row in \
-                 the namespace before the new document lands"
-                    .into(),
-            );
+                 the scope before the new document lands",
+            ));
         }
+        let scope = parse_scope(self.scope.as_deref())?;
         Ok(SchemaReplaceRequest {
             schema_document: self.schema_document,
             force_drop_existing: true,
             request_id: brain_db_sdk::new_id(),
             act_as: None,
+            scope,
         })
     }
 }
@@ -277,18 +351,64 @@ mod schema_tests {
             schema_document: "entity P {}".into(),
             dry_run: true,
             allow_breaking: true,
+            scope: None,
         }
-        .to_request();
+        .to_request()
+        .expect("no scope is the namespace base");
         assert_eq!(up.schema_document, "entity P {}");
         assert!(up.dry_run);
         assert!(up.allow_breaking);
         assert_ne!(up.request_id, [0u8; 16]); // a fresh id was minted
+        // An omitted scope declares at the namespace base. It is NOT inferred
+        // from the effective space, which almost every request names.
+        assert_eq!(up.scope, SchemaScope::Namespace);
 
         let val = SchemaValidateBody {
             schema_document: "entity Q {}".into(),
+            scope: None,
         }
-        .to_request();
+        .to_request()
+        .expect("no scope is the namespace base");
         assert_eq!(val.schema_document, "entity Q {}");
+        assert_eq!(val.scope, SchemaScope::Namespace);
+    }
+
+    #[test]
+    fn upload_scope_is_parsed_case_insensitively() {
+        for (text, want) in [
+            ("space", SchemaScope::Space),
+            ("SPACE", SchemaScope::Space),
+            ("Namespace", SchemaScope::Namespace),
+            ("namespace", SchemaScope::Namespace),
+        ] {
+            let req = SchemaUploadBody {
+                schema_document: "entity P {}".into(),
+                dry_run: false,
+                allow_breaking: false,
+                scope: Some(text.into()),
+            }
+            .to_request()
+            .unwrap_or_else(|_| panic!("{text} is a valid scope"));
+            assert_eq!(req.scope, want, "scope {text:?}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_upload_scope_is_refused_not_narrowed() {
+        // Narrowing an unknown value to the base would publish into the
+        // shared namespace a document the caller meant to keep to one space.
+        let err = SchemaUploadBody {
+            schema_document: "entity P {}".into(),
+            dry_run: false,
+            allow_breaking: false,
+            scope: Some("tenant".into()),
+        }
+        .to_request()
+        .expect_err("an unknown scope must be refused");
+        assert!(
+            format!("{err:?}").contains("tenant"),
+            "the error names the value it rejected: {err:?}"
+        );
     }
 
     #[test]
@@ -297,6 +417,7 @@ mod schema_tests {
             SchemaReplaceBody {
                 schema_document: "entity P {}".into(),
                 force_drop_existing: false,
+                scope: None,
             }
             .to_request()
             .is_err()
@@ -304,6 +425,7 @@ mod schema_tests {
         let req = SchemaReplaceBody {
             schema_document: "entity P {}".into(),
             force_drop_existing: true,
+            scope: None,
         }
         .to_request()
         .unwrap();
@@ -453,10 +575,7 @@ impl ListSchemasResponseDto {
     /// Fold the streamed frames into one page.
     #[must_use]
     pub fn from_frames(frames: Vec<SchemaListResponseFrame>) -> Self {
-        let namespace = frames
-            .first()
-            .map(|f| f.namespace.clone())
-            .unwrap_or_default();
+        let namespace = frames.first().map_or_default(|f| f.namespace.clone());
         let total = frames.first().map_or(0, |f| f.total);
         // The LAST frame's cursor: an earlier one would replay rows this page
         // already returned.
@@ -547,6 +666,15 @@ pub struct SchemaDropQuery {
     /// enriched from the typed-graph tables.
     #[serde(default)]
     pub force: bool,
+    /// Which scope to narrow: `"namespace"` (the default — the tenant's base)
+    /// or `"space"` (the caller's effective space). Case-insensitive.
+    ///
+    /// A narrowing reaches exactly the declarations the named scope made, so
+    /// dropping at the base leaves every space's overlay standing and
+    /// dropping in a space leaves the tenant's base standing. Never inferred
+    /// from the effective space — see [`parse_scope`].
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// Map the path segment to the wire's target discriminant.
@@ -582,18 +710,20 @@ impl SchemaDropQuery {
         namespace: &str,
         kind: &str,
         name: &str,
-    ) -> Result<SchemaDropRequest, String> {
+    ) -> Result<SchemaDropRequest, ApiError> {
         let target_name = name.trim().to_owned();
         if target_name.is_empty() {
-            return Err("name must not be blank".into());
+            return Err(ApiError::bad_request("name must not be blank"));
         }
+        let scope = parse_scope(self.scope.as_deref())?;
         Ok(SchemaDropRequest {
             namespace: namespace.to_owned(),
-            target_kind: drop_target(kind)?,
+            target_kind: drop_target(kind).map_err(ApiError::bad_request)?,
             target_name,
             force: self.force,
             request_id: brain_db_sdk::new_id(),
             act_as: None,
+            scope,
         })
     }
 }
@@ -724,7 +854,10 @@ mod schema_introspection_tests {
 
     #[test]
     fn drop_maps_the_kind_segment_and_rejects_anything_else() {
-        let q = SchemaDropQuery { force: true };
+        let q = SchemaDropQuery {
+            force: true,
+            scope: None,
+        };
         let req = q.to_request("mirror", "predicate", "works_at").unwrap();
         assert_eq!(req.target_kind, schema_drop_target::PREDICATE);
         assert_eq!(req.target_name, "works_at");
@@ -748,7 +881,10 @@ mod schema_introspection_tests {
         let err = SchemaDropQuery::default()
             .to_request("mirror", "entity_type", "Person")
             .unwrap_err();
-        assert!(err.contains("predicate"), "the error names what IS allowed");
+        assert!(
+            format!("{err:?}").contains("predicate"),
+            "the error names what IS allowed: {err:?}"
+        );
 
         assert!(
             SchemaDropQuery::default()

@@ -10,12 +10,14 @@
 
 use brain_db_sdk::new_id;
 use brain_db_sdk::wire::types::{
-    InferenceKind, InferenceStep, ObservationInput, PlanBudget, PlanRequest, PlanState, PlanStep,
-    PlanStrategy, ReasonRequest, TransitionKind,
+    InferenceKind, InferenceStep, ObservationInput, PlanBudget, PlanRequest, PlanResponseFrame,
+    PlanState, PlanStatus, PlanStep, PlanStrategy, ReasonRequest, ReasonResponseFrame,
+    ReasonStatus, TransitionKind,
 };
 use serde::{Deserialize, Serialize};
 
 use super::parse_memory_id;
+use super::reasoning_trace::{plan_trace_string, reason_trace_string};
 
 /// A plan/reason endpoint: either free `text` or an existing `memory_id`.
 #[derive(Debug, Deserialize)]
@@ -78,6 +80,15 @@ pub struct PlanBody {
     pub max_branches: u32,
     #[serde(default)]
     pub strategy: Option<String>,
+    /// Ask for Brain's bidirectional-search trace alongside the steps: every
+    /// node the BFS visited from each direction, with the edge it was reached
+    /// through and its goal alignment, and every meeting point the two
+    /// searches found — including the ones a `max_paths` cap dropped.
+    ///
+    /// Off by default and free when off — the engine builds the trace only
+    /// when the request asks for one. Mirrors `/v1/recall`'s `include_trace`.
+    #[serde(default)]
+    pub include_trace: Option<bool>,
 }
 
 fn default_max_steps() -> u32 {
@@ -109,7 +120,7 @@ impl PlanBody {
             session_filter: None,
             request_id: Some(new_id()),
             txn_id: None,
-            trace: false,
+            trace: self.include_trace.unwrap_or(false),
             act_as: None,
         })
     }
@@ -143,13 +154,62 @@ impl From<PlanStep> for PlanStepDto {
 #[derive(Debug, Serialize)]
 pub struct PlanResponseDto {
     pub steps: Vec<PlanStepDto>,
+    /// How the search ENDED, in the engine's own words: `goal_reached`,
+    /// `budget_exhausted`, `no_path_found` or `cancelled`.
+    ///
+    /// An empty `steps` means three different things and a caller cannot tell
+    /// them apart from the list alone — a goal that is genuinely unreachable,
+    /// a budget that ran out mid-search, and a cancelled run all return no
+    /// steps. The engine already distinguishes them on its terminal frame.
+    pub status: Option<&'static str>,
+    /// The bidirectional-search trace, as a JSON **string**, when
+    /// `include_trace` asked for one; omitted otherwise, so a caller that did
+    /// not ask sees the response it always saw.
+    ///
+    /// A string rather than a nested object for the reason every id this API
+    /// returns is a decimal string: the trace carries 128-bit memory ids and
+    /// a JSON number cannot hold one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<String>,
 }
 
-impl From<Vec<PlanStep>> for PlanResponseDto {
-    fn from(v: Vec<PlanStep>) -> Self {
+impl PlanResponseDto {
+    /// Build from the streamed PLAN frames.
+    ///
+    /// The steps arrive spread across frames and are flattened in order; the
+    /// terminal status and the trace ride the final frame alone, so both are
+    /// taken from the last frame that carries one.
+    #[must_use]
+    pub fn from_frames(frames: Vec<PlanResponseFrame>) -> Self {
+        let status = frames
+            .iter()
+            .rev()
+            .find_map(|f| f.plan_status)
+            .map(plan_status_str);
+        let trace = frames
+            .iter()
+            .rev()
+            .find_map(|f| f.trace.as_ref())
+            .map(plan_trace_string);
         Self {
-            steps: v.into_iter().map(PlanStepDto::from).collect(),
+            steps: frames
+                .into_iter()
+                .flat_map(|f| f.steps)
+                .map(PlanStepDto::from)
+                .collect(),
+            status,
+            trace,
         }
+    }
+}
+
+/// How a PLAN ended, as the response spells it.
+fn plan_status_str(s: PlanStatus) -> &'static str {
+    match s {
+        PlanStatus::GoalReached => "goal_reached",
+        PlanStatus::BudgetExhausted => "budget_exhausted",
+        PlanStatus::NoPathFound => "no_path_found",
+        PlanStatus::Cancelled => "cancelled",
     }
 }
 
@@ -175,6 +235,15 @@ pub struct ReasonBody {
     pub max_inferences: u32,
     #[serde(default = "default_wall_ms")]
     pub budget_wall_time_ms: u32,
+    /// Ask for Brain's evidence-walk trace alongside the inferences: the base
+    /// observation's whole candidate set, every edge the walk considered with
+    /// the bucket that pruned it, the un-collapsed score components behind
+    /// each confidence, and whether the topic centroid ran.
+    ///
+    /// Off by default and free when off. Mirrors `/v1/recall`'s
+    /// `include_trace`.
+    #[serde(default)]
+    pub include_trace: Option<bool>,
 }
 
 fn default_depth() -> u32 {
@@ -199,7 +268,7 @@ impl ReasonBody {
             budget_wall_time_ms: self.budget_wall_time_ms,
             request_id: Some(new_id()),
             txn_id: None,
-            trace: false,
+            trace: self.include_trace.unwrap_or(false),
             act_as: None,
         })
     }
@@ -241,13 +310,53 @@ impl From<InferenceStep> for InferenceStepDto {
 #[derive(Debug, Serialize)]
 pub struct ReasonResponseDto {
     pub inferences: Vec<InferenceStepDto>,
+    /// How the walk ENDED: `complete`, `budget_exhausted`,
+    /// `depth_limit_reached` or `cancelled`. A short chain that stopped at the
+    /// depth limit is not the same answer as one that ran to completion, and
+    /// the list of inferences cannot say which happened.
+    pub status: Option<&'static str>,
+    /// The evidence-walk trace, as a JSON **string**, when `include_trace`
+    /// asked for one. See `PlanResponseDto::trace` for why it is a string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<String>,
 }
 
-impl From<Vec<InferenceStep>> for ReasonResponseDto {
-    fn from(v: Vec<InferenceStep>) -> Self {
+impl ReasonResponseDto {
+    /// Build from the streamed REASON frames.
+    ///
+    /// The inferences arrive spread across frames and are flattened in order;
+    /// the terminal status and the trace ride the final frame alone.
+    #[must_use]
+    pub fn from_frames(frames: Vec<ReasonResponseFrame>) -> Self {
+        let status = frames
+            .iter()
+            .rev()
+            .find_map(|f| f.reason_status)
+            .map(reason_status_str);
+        let trace = frames
+            .iter()
+            .rev()
+            .find_map(|f| f.trace.as_ref())
+            .map(reason_trace_string);
         Self {
-            inferences: v.into_iter().map(InferenceStepDto::from).collect(),
+            inferences: frames
+                .into_iter()
+                .flat_map(|f| f.inferences)
+                .map(InferenceStepDto::from)
+                .collect(),
+            status,
+            trace,
         }
+    }
+}
+
+/// How a REASON ended, as the response spells it.
+fn reason_status_str(s: ReasonStatus) -> &'static str {
+    match s {
+        ReasonStatus::Complete => "complete",
+        ReasonStatus::BudgetExhausted => "budget_exhausted",
+        ReasonStatus::DepthLimitReached => "depth_limit_reached",
+        ReasonStatus::Cancelled => "cancelled",
     }
 }
 
@@ -283,6 +392,7 @@ mod reasoning_tests {
             max_wall_time_ms: 2_000,
             max_branches: 16,
             strategy: Some(" A* ".into()),
+            include_trace: Some(true),
         };
         let req = body.to_request().unwrap();
         assert!(matches!(req.start, PlanState::ByText(ref t) if t == "at home"));
@@ -291,6 +401,7 @@ mod reasoning_tests {
         assert_eq!(req.budget.max_steps, 12);
         assert_eq!(req.budget.max_wall_time_ms, 2_000);
         assert_eq!(req.budget.max_branches_explored, 16);
+        assert!(req.trace, "include_trace must reach the wire request");
         assert!(req.request_id.is_some());
     }
 
@@ -307,6 +418,7 @@ mod reasoning_tests {
             max_wall_time_ms: 5_000,
             max_branches: 32,
             strategy: None,
+            include_trace: None,
         };
         assert!(missing.to_request().is_err());
 
@@ -318,6 +430,7 @@ mod reasoning_tests {
             max_wall_time_ms: 5_000,
             max_branches: 32,
             strategy: None,
+            include_trace: None,
         };
         assert!(blank.to_request().is_err());
 
@@ -328,35 +441,61 @@ mod reasoning_tests {
             max_wall_time_ms: 5_000,
             max_branches: 32,
             strategy: Some("teleport".into()),
+            include_trace: None,
         };
         assert!(bad_strategy.to_request().is_err());
     }
 
+    fn plan_step(i: u32, id: u128, kind: TransitionKind) -> PlanStep {
+        PlanStep {
+            step_index: i,
+            memory_id: id,
+            text: "step".into(),
+            transition_kind: kind,
+            confidence: 1.0,
+            estimated_distance_to_goal: 1.0,
+        }
+    }
+
     #[test]
-    fn plan_response_maps_steps_and_transition_kinds() {
-        let steps = vec![
-            PlanStep {
-                step_index: 0,
-                memory_id: 7,
-                text: "start".into(),
-                transition_kind: TransitionKind::Initial,
-                confidence: 1.0,
-                estimated_distance_to_goal: 3.0,
+    fn plan_response_flattens_frames_and_maps_transition_kinds() {
+        // Two frames, as the engine streams them: the steps concatenate in
+        // order and only the final frame carries the status.
+        let frames = vec![
+            PlanResponseFrame {
+                steps: vec![plan_step(0, 7, TransitionKind::Initial)],
+                is_final: false,
+                plan_status: None,
+                trace: None,
             },
-            PlanStep {
-                step_index: 1,
-                memory_id: 8,
-                text: "next".into(),
-                transition_kind: TransitionKind::Other("teleport".into()),
-                confidence: 0.7,
-                estimated_distance_to_goal: 1.0,
+            PlanResponseFrame {
+                steps: vec![plan_step(1, 8, TransitionKind::Other("teleport".into()))],
+                is_final: true,
+                plan_status: Some(PlanStatus::GoalReached),
+                trace: None,
             },
         ];
-        let dto = PlanResponseDto::from(steps);
+        let dto = PlanResponseDto::from_frames(frames);
         assert_eq!(dto.steps.len(), 2);
         assert_eq!(dto.steps[0].memory_id, "7");
         assert_eq!(dto.steps[0].transition_kind, "initial");
         assert_eq!(dto.steps[1].transition_kind, "teleport"); // Other passthrough
+        assert_eq!(dto.status, Some("goal_reached"));
+        assert!(dto.trace.is_none(), "a plan that did not ask carries none");
+    }
+
+    /// An empty path is three different outcomes, and the status is the only
+    /// thing that tells them apart.
+    #[test]
+    fn an_empty_plan_still_reports_why_it_ended() {
+        let dto = PlanResponseDto::from_frames(vec![PlanResponseFrame {
+            steps: vec![],
+            is_final: true,
+            plan_status: Some(PlanStatus::BudgetExhausted),
+            trace: None,
+        }]);
+        assert!(dto.steps.is_empty());
+        assert_eq!(dto.status, Some("budget_exhausted"));
     }
 
     #[test]
@@ -370,6 +509,7 @@ mod reasoning_tests {
             confidence_threshold: 0.6,
             max_inferences: 7,
             budget_wall_time_ms: 3_000,
+            include_trace: None,
         };
         let req = body.to_request().unwrap();
         assert!(matches!(req.observation, ObservationInput::ByMemoryId(9)));
@@ -389,6 +529,7 @@ mod reasoning_tests {
                 confidence_threshold: 0.5,
                 max_inferences: 10,
                 budget_wall_time_ms: 5_000,
+                include_trace: None,
             }
             .to_request()
             .is_err()
@@ -396,20 +537,27 @@ mod reasoning_tests {
     }
 
     #[test]
-    fn reason_response_maps_inferences_and_kinds() {
-        let steps = vec![InferenceStep {
-            step_index: 0,
-            claim: "it rained".into(),
-            supporting_memories: vec![1, 2],
-            contradicting_memories: vec![3],
-            confidence: 0.8,
-            inference_kind: InferenceKind::CausalExplanation,
+    fn reason_response_maps_inferences_kinds_and_terminal_status() {
+        let frames = vec![ReasonResponseFrame {
+            inferences: vec![InferenceStep {
+                step_index: 0,
+                claim: "it rained".into(),
+                supporting_memories: vec![1, 2],
+                contradicting_memories: vec![3],
+                confidence: 0.8,
+                inference_kind: InferenceKind::CausalExplanation,
+            }],
+            is_final: true,
+            reason_status: Some(ReasonStatus::DepthLimitReached),
+            trace: None,
         }];
-        let dto = ReasonResponseDto::from(steps);
+        let dto = ReasonResponseDto::from_frames(frames);
         assert_eq!(dto.inferences.len(), 1);
         assert_eq!(dto.inferences[0].claim, "it rained");
         assert_eq!(dto.inferences[0].supporting_memories, vec!["1", "2"]);
         assert_eq!(dto.inferences[0].contradicting_memories, vec!["3"]);
         assert_eq!(dto.inferences[0].inference_kind, "causal_explanation");
+        // A chain that stopped at the depth limit is not a completed one.
+        assert_eq!(dto.status, Some("depth_limit_reached"));
     }
 }

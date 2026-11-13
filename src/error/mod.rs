@@ -183,6 +183,22 @@ impl ApiError {
         }
     }
 
+    /// A refused request body or query string, at the status the extractor
+    /// chose.
+    ///
+    /// The status is NOT normalised: axum separates a body that is not JSON
+    /// (`400`) from one that is JSON but not this shape (`422`) from one sent
+    /// without a JSON content type (`415`), and those are three different
+    /// things for the caller to fix. Only the envelope is made uniform.
+    pub fn invalid_input(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: "bad_request",
+            message: message.into(),
+            internal: None,
+        }
+    }
+
     /// Map a Brain client error to the matching HTTP status. Transport faults and
     /// unavailable/exhausted verdicts are `503`; auth verdicts `401`/`403`;
     /// validation/not-found/conflict map directly; anything else is `502`.

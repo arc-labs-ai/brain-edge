@@ -1,6 +1,6 @@
 [package]
 name = "brain-edge"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
@@ -64,19 +64,18 @@ arc-swap = "1"
 # Docker — depend on brain-sdk sitting next to this repo on disk, and meant we
 # compiled against working-tree source rather than the artifact consumers get.
 #
-# 0.2.0 is a breaking release: `whoami` reports named permission booleans in
-# place of the raw bitset, and the LLM credential error codes the BYOK handlers
-# map arrived with it.
+# The floor is 0.4.4 and it is REQUIRED, not cosmetic. `SchemaUploadRequest`
+# carries `scope` — where a declaration lands, the namespace base or an overlay
+# at the caller's own space — and the field has no serde default on either
+# side: an older SDK encodes a SCHEMA_UPLOAD this server refuses to decode at
+# all, and `to_request()` below does not compile without it.
 #
-# 0.3.0 is the next breaking release: `MemoryInspectResponse` grew an `edges`
-# field, which is what `GET /v1/memories/{id}` now serves as `edges` — the read
-# side of `POST /v1/links`, which was write-only over HTTP until it shipped.
-#
-# 0.4.0 adds `error_message` to `StageHypePayload`, which the subscribe DTO
-# relays so a failed HyPE stage can say why. The bump is required, not
-# cosmetic: `"0.3.0"` is a caret requirement and will not resolve into 0.4.x,
-# so the field would simply not exist here.
-brain-db-sdk = "0.4.0"
+# A caret requirement cannot express that on its own. `"0.4.0"` means
+# >=0.4.0, <0.5.0, so it resolves into 0.4.4 anyway on the next `cargo update`
+# — a required field added inside a caret range is a source break the
+# requirement never warns about. Stating the floor is what makes the
+# dependency honest about which versions actually work.
+brain-db-sdk = "0.4.4"
 
 # ---------------------------------------------------------------------------
 # Lints.

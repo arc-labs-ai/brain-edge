@@ -226,10 +226,7 @@ pub struct GraphFetchQuery {
 
 impl GraphFetchQuery {
     pub fn to_request(&self) -> Result<GraphFetchRequest, String> {
-        let limit = self
-            .limit
-            .unwrap_or(GRAPH_DEFAULT_LIMIT)
-            .clamp(1, GRAPH_MAX_LIMIT);
+        let limit = super::bounded("limit", self.limit, GRAPH_DEFAULT_LIMIT, GRAPH_MAX_LIMIT)?;
         let cursor = match &self.cursor {
             Some(c) if !c.is_empty() => hex_decode(c)?,
             _ => Vec::new(),
@@ -358,9 +355,22 @@ mod graph_tests {
     use super::*;
 
     #[test]
-    fn query_clamps_limit_and_defaults_layers() {
+    fn query_refuses_an_out_of_range_limit_and_defaults_layers() {
+        for bad in [0, GRAPH_MAX_LIMIT + 1, 9999] {
+            let err = GraphFetchQuery {
+                limit: Some(bad),
+                cursor: None,
+                include_statements: None,
+                include_memories: Some(true),
+                include_memory_edges: None,
+                include_tombstoned: None,
+            }
+            .to_request()
+            .expect_err("an out-of-range limit must be refused");
+            assert!(err.contains("limit"), "limit {bad} gave {err}");
+        }
         let q = GraphFetchQuery {
-            limit: Some(9999),
+            limit: Some(GRAPH_MAX_LIMIT),
             cursor: None,
             include_statements: None,
             include_memories: Some(true),

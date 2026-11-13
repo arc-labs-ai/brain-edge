@@ -47,13 +47,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, Sse};
 use futures_core::Stream;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::app::extract::ApiQuery;
 use crate::dto::subscribe::{SubscribeQuery, SubscriptionClosedDto, SubscriptionEventDto};
 use crate::error::ApiError;
 use crate::port::Outcome;
@@ -114,7 +115,7 @@ impl<T> Stream for SseStream<T> {
 pub async fn subscribe(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<SubscribeQuery>,
+    ApiQuery(query): ApiQuery<SubscribeQuery>,
 ) -> Result<Sse<SseStream<SubscriptionEventDto>>, ApiError> {
     // An automatic browser reconnect resends the last id it saw; the original
     // `?from_lsn=` is still in the URL and would rewind the feed, so the

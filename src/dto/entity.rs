@@ -8,9 +8,9 @@ use brain_db_sdk::wire::types::{
     EntityCreateRequest, EntityCreateResponse, EntityGetRequest, EntityGetResponse,
     EntityListRequest, EntityListResponseFrame, EntityMergeRequest, EntityMergeResponse,
     EntityRenameRequest, EntityResolveRequest, EntityResolveResponse, EntityTombstoneRequest,
-    EntityTombstoneResponse, EntityUnmergeRequest, EntityUnmergeResponse, EntityUpdateRequest,
-    EntityView, RelationTraverseRequest, RelationTraverseResponseFrame, ResolutionOutcomeWire,
-    TraversalPathWire,
+    EntityTombstoneResponse, EntityTypeListResponseFrame, EntityUnmergeRequest,
+    EntityUnmergeResponse, EntityUpdateRequest, EntityView, RelationTraverseRequest,
+    RelationTraverseResponseFrame, ResolutionOutcomeWire, TraversalPathWire,
 };
 use serde::{Deserialize, Serialize};
 
@@ -278,10 +278,7 @@ impl ListEntitiesQuery {
     /// # Errors
     /// The cursor is not hex.
     pub fn to_request(&self) -> Result<EntityListRequest, String> {
-        let limit = self
-            .limit
-            .unwrap_or(DEFAULT_LIST_LIMIT)
-            .clamp(1, MAX_LIST_LIMIT);
+        let limit = super::bounded("limit", self.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?;
         Ok(EntityListRequest {
             entity_type_id: self.type_id,
             name_prefix: self.prefix.clone(),
@@ -374,14 +371,18 @@ impl TraverseBody {
     pub fn to_request(&self, id: &str) -> Result<RelationTraverseRequest, String> {
         let start_entity = parse_uuid(id)?;
         let direction = traverse_direction_wire(&self.direction)?;
-        let max_depth = self
-            .max_depth
-            .unwrap_or(DEFAULT_TRAVERSE_DEPTH)
-            .clamp(1, MAX_TRAVERSE_DEPTH);
-        let max_nodes = self
-            .max_nodes
-            .unwrap_or(DEFAULT_TRAVERSE_NODES)
-            .clamp(1, MAX_TRAVERSE_NODES);
+        let max_depth = super::bounded(
+            "max_depth",
+            self.max_depth,
+            DEFAULT_TRAVERSE_DEPTH,
+            MAX_TRAVERSE_DEPTH,
+        )?;
+        let max_nodes = super::bounded(
+            "max_nodes",
+            self.max_nodes,
+            DEFAULT_TRAVERSE_NODES,
+            MAX_TRAVERSE_NODES,
+        )?;
         Ok(RelationTraverseRequest {
             start_entity,
             relation_types: self.relation_types.clone(),
@@ -590,14 +591,29 @@ mod entity_tests {
     }
 
     #[test]
-    fn list_query_clamps_limit_and_defaults() {
-        let q = ListEntitiesQuery {
-            limit: Some(9999),
+    fn list_query_refuses_an_out_of_range_limit_and_defaults_when_omitted() {
+        // Brain refuses a limit outside its range, so the edge does too:
+        // clamping here would hand an HTTP caller a quietly truncated page
+        // where the protocol says the request was invalid.
+        for bad in [0, MAX_LIST_LIMIT + 1, 9999] {
+            let err = ListEntitiesQuery {
+                limit: Some(bad),
+                ..Default::default()
+            }
+            .to_request()
+            .expect_err("an out-of-range limit must be refused");
+            assert!(err.contains("limit"), "limit {bad} gave {err}");
+        }
+        let at_cap = ListEntitiesQuery {
+            limit: Some(MAX_LIST_LIMIT),
             ..Default::default()
-        };
-        let req = q.to_request().unwrap();
-        assert_eq!(req.limit, MAX_LIST_LIMIT);
-        assert_eq!(req.cursor, [] as [u8; 0]);
+        }
+        .to_request()
+        .expect("the cap itself is in range");
+        assert_eq!(at_cap.limit, MAX_LIST_LIMIT);
+        assert_eq!(at_cap.cursor, [] as [u8; 0]);
+
+        // Omitted is the caller declining to choose, so the default stands.
         let none = ListEntitiesQuery::default().to_request().unwrap();
         assert_eq!(none.limit, DEFAULT_LIST_LIMIT);
     }
@@ -668,21 +684,39 @@ mod entity_tests {
     }
 
     #[test]
-    fn traverse_body_parses_direction_and_clamps() {
+    fn traverse_body_parses_direction_and_refuses_out_of_range_budgets() {
         let id = "00000000-0000-0000-0000-000000000001";
         let req = TraverseBody {
             direction: "both".into(),
             relation_types: vec!["brain:works_at".into()],
-            max_depth: Some(99),
-            max_nodes: Some(0),
+            max_depth: Some(MAX_TRAVERSE_DEPTH),
+            max_nodes: Some(MAX_TRAVERSE_NODES),
             include_superseded: true,
         }
         .to_request(id)
         .unwrap();
         assert_eq!(req.direction, 2);
         assert_eq!(req.max_depth, MAX_TRAVERSE_DEPTH);
-        assert_eq!(req.max_nodes, 1); // clamped up from 0
+        assert_eq!(req.max_nodes, MAX_TRAVERSE_NODES);
         assert!(req.include_superseded);
+
+        // Brain refuses either budget outside its range; so does the edge.
+        for (depth, nodes, field) in [
+            (Some(MAX_TRAVERSE_DEPTH + 1), None, "max_depth"),
+            (Some(0), None, "max_depth"),
+            (None, Some(MAX_TRAVERSE_NODES + 1), "max_nodes"),
+            (None, Some(0), "max_nodes"),
+        ] {
+            let err = TraverseBody {
+                direction: "both".into(),
+                max_depth: depth,
+                max_nodes: nodes,
+                ..Default::default()
+            }
+            .to_request(id)
+            .expect_err("an out-of-range budget must be refused");
+            assert!(err.contains(field), "{field}: {err}");
+        }
 
         // default direction is outgoing (0)
         let req = TraverseBody::default().to_request(id).unwrap();
@@ -1113,5 +1147,60 @@ mod entity_authoring_tests {
         )
         .unwrap();
         assert_eq!(given.reason, "duplicate");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entity types
+// ---------------------------------------------------------------------------
+
+/// One entity type in `GET /v1/entity-types`.
+#[derive(Debug, Serialize)]
+pub struct EntityTypeDto {
+    /// What `entity_type_id` means on every other entity route.
+    pub entity_type_id: u32,
+    /// `"<namespace>:<Name>"` — `brain:Person` for a built-in, the caller's
+    /// own namespace for a type they declared or the extractor coined.
+    pub type_qname: String,
+    /// False when the extractor coined the type from a write rather than a
+    /// schema document declaring it. Both are usable; only a declared type
+    /// survives a schema replace.
+    pub declared: bool,
+    /// When the type was registered — declared by an upload, or coined by
+    /// the write that first needed it.
+    pub created_at_unix_nanos: u64,
+}
+
+/// `GET /v1/entity-types` response.
+///
+/// The types a caller may use, with the ids the rest of the API takes. Every
+/// other entity route identifies a type by number, and nothing else reports
+/// it: a schema document names its types without ids, and a coined type is
+/// in no document at all.
+#[derive(Debug, Serialize)]
+pub struct ListEntityTypesResponseDto {
+    /// Every type the caller's scope resolves, narrowest scope first: a
+    /// space's own overlay, then the tenant's base, then the built-ins.
+    pub items: Vec<EntityTypeDto>,
+    /// How many were returned. The registry is bounded by a domain rather
+    /// than by corpus size, so this is a single frame with no cursor.
+    pub total: u32,
+}
+
+impl From<EntityTypeListResponseFrame> for ListEntityTypesResponseDto {
+    fn from(f: EntityTypeListResponseFrame) -> Self {
+        Self {
+            total: f.total,
+            items: f
+                .items
+                .into_iter()
+                .map(|i| EntityTypeDto {
+                    entity_type_id: i.entity_type_id,
+                    type_qname: i.type_qname,
+                    declared: i.declared,
+                    created_at_unix_nanos: i.created_at_unix_nanos,
+                })
+                .collect(),
+        }
     }
 }

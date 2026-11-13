@@ -2,12 +2,13 @@
 
 use std::time::Instant;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
 use brain_db_sdk::new_id;
 use brain_db_sdk::wire::types::{LinkRequest, UnlinkRequest};
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::dto::graph::{
     GraphFetchQuery, GraphPageDto, LinkBody, LinkResponseDto, UnlinkBody, UnlinkResponseDto,
 };
@@ -21,7 +22,7 @@ use crate::state::EdgeState;
 pub async fn fetch(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<GraphFetchQuery>,
+    ApiQuery(query): ApiQuery<GraphFetchQuery>,
 ) -> Result<Json<GraphPageDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -40,7 +41,7 @@ pub async fn fetch(
 pub async fn link(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<LinkBody>,
+    ApiJson(body): ApiJson<LinkBody>,
 ) -> Result<Json<LinkResponseDto>, ApiError> {
     let (source, target, kind, weight) = body.parts().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -67,7 +68,7 @@ pub async fn link(
 pub async fn unlink(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<UnlinkBody>,
+    ApiJson(body): ApiJson<UnlinkBody>,
 ) -> Result<Json<UnlinkResponseDto>, ApiError> {
     let (source, target, kind) = body.parts().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;

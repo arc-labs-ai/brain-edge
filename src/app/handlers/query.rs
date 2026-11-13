@@ -11,6 +11,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
 
+use crate::app::extract::ApiJson;
 use crate::dto::query::{QueryBody, QueryExplainResponseDto, QueryTraceResponseDto};
 use crate::error::ApiError;
 use crate::port::Outcome;
@@ -21,7 +22,7 @@ use crate::state::EdgeState;
 pub async fn explain(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<QueryBody>,
+    ApiJson(body): ApiJson<QueryBody>,
 ) -> Result<Json<QueryExplainResponseDto>, ApiError> {
     let mut req = body.to_explain().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -46,7 +47,7 @@ pub async fn explain(
 pub async fn trace(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<QueryBody>,
+    ApiJson(body): ApiJson<QueryBody>,
 ) -> Result<Json<QueryTraceResponseDto>, ApiError> {
     let mut req = body.to_trace().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;

@@ -97,6 +97,7 @@ having believed it, and `retract` destroys the content outright.
 | `PUT`  | `/v1/schema`          | `{ schema_document, force_drop_existing }`     | `{ namespace, schema_version, dropped_count, validation_errors }` |
 | `GET`  | `/v1/schemas`         | `limit?`, `cursor?`                            | `{ namespace, items, total, next_cursor }` — the version history, as opposed to `/v1/schema`'s one active document |
 | `DELETE` | `/v1/schema/{kind}/{name}` | `force?`                                  | `{ namespace, schema_version, target_kind, target_name, dropped, live_rows, validation_errors }` |
+| `GET`  | `/v1/entity-types`    | —                                              | `{ items, total }` — every entity type this caller can use, each with the `entity_type_id` that `POST /v1/entities` and `GET /v1/entities` take, its `<namespace>:<Name>` qname, and whether a schema declared it or extraction coined it. |
 | `GET`  | `/v1/extractors`      | —                                              | `{ items, total }` — what reads a new memory and what it may produce |
 
 `POST` **merges** into the active schema — additive and versioned. A

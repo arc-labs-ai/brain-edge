@@ -100,7 +100,7 @@ def parse_routes(text: str) -> list[dict]:
 
 # --- handler signatures ----------------------------------------------------
 
-# `pub async fn name(... Json(body): Json<T> ...) -> Result<Json<R>, ApiError>`,
+# `pub async fn name(... ApiJson(body): ApiJson<T> ...) -> Result<Json<R>, ApiError>`,
 # and the same with a status code: `-> Result<(StatusCode, Json<R>), ApiError>`,
 # which is how a handler reports 201-vs-200 on an idempotent create.
 #
@@ -157,8 +157,18 @@ SIGNATURE = re.compile(
     re.S,
 )
 HANDLER_SPLIT = re.compile(r"pub async fn (\w+)")
-JSON_ARG = re.compile(r"Json\((?:\w+)\):\s*Json<(\w+)>")
-QUERY_ARG = re.compile(r"Query\((?:\w+)\):\s*Query<(\w+)>")
+# The extractors are `ApiJson` / `ApiQuery` (see `src/app/extract.rs`), which
+# wrap axum's own so a refused body comes back in this API's error envelope
+# rather than as `text/plain`. `Api` is optional here so a handler written
+# either way is still read: the wrapper changes the REFUSAL, not the request
+# shape, and the shape is what this manifest is about.
+#
+# Keeping the optional prefix is not politeness — a manifest that silently
+# stops recognising an extractor does not fail, it emits `request_body: null`
+# for every route, and the SDK conformance checks then pass against a contract
+# that says the API takes no bodies at all.
+JSON_ARG = re.compile(r"(?:Api)?Json\((?:\w+)\):\s*(?:Api)?Json<(\w+)>")
+QUERY_ARG = re.compile(r"(?:Api)?Query\((?:\w+)\):\s*(?:Api)?Query<(\w+)>")
 
 
 def parse_handlers(text: str, module: str) -> dict[str, dict]:
