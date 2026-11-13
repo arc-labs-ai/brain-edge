@@ -1,149 +1,150 @@
 //! BYOK credential handlers: register / inspect / remove a tenant's provider key.
 //!
+//! # Brain holds the key; this layer only carries it
+//!
+//! A provider key has exactly one home: Brain's own sealed credential store,
+//! which is the only one the extraction, HyPE and consolidation stages read.
+//! These handlers translate the HTTP surface onto the `LLM_CREDENTIAL_*` wire
+//! verbs and keep nothing. Storing a copy here would make
+//! `GET /v1/llm-credential` answer `200` for a key derivation cannot see —
+//! every surface reporting success while writes report no credential.
+//!
 //! # Where the namespace comes from
 //!
-//! **Never from the request body.** The namespace is read from
-//! `whoami` — the identity Brain resolves from the caller's own credential —
-//! so a tenant can only ever manage their own key. Accepting a namespace
-//! parameter would make this endpoint a cross-tenant write primitive, and it
-//! would look perfectly reasonable in a diff.
+//! **Never from the request body, and not from `whoami` either.** The identity
+//! rides on the request as `act_as`, stamped by the injected credential
+//! resolver: unset for self-host, where the connection already *is* the
+//! tenant, and the resolved tenant under the hosted gateway, where one service
+//! principal multiplexes everyone. Brain resolves the effective namespace from
+//! that before its handler runs, so a caller can only ever reach their own key.
 //!
 //! # The plaintext's lifetime
 //!
-//! A provider key exists in the clear for the duration of [`put`] and no
-//! longer: it arrives in the body, is sealed against the namespace+provider
-//! binding, and only the ciphertext is handed to the store. Nothing that leaves
-//! this module can reconstruct it.
+//! The key exists in the clear for the duration of [`put`]: it arrives in the
+//! body and goes out on the wire to Brain, which seals it. Nothing here
+//! persists it, and the confidentiality of that hop is the transport's job —
+//! Brain refuses a registration that is not TLS, mTLS or loopback.
+
+use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Json;
-use brain_db_sdk::wire::types::GetCapabilitiesRequest;
+use brain_db_sdk::wire::types::{
+    LlmCredentialDeleteRequest, LlmCredentialGetRequest, LlmCredentialPutRequest,
+    LlmCredentialVerifyRequest, VerifyOutcome,
+};
 
 use crate::app::extract::ApiJson;
-use crate::app::handlers::llm_proxy::{KeyCheck, Upstream};
-use crate::crypto::SecretBinding;
 use crate::dto::llm_credential::{
     DeleteLlmCredentialDto, LlmCredentialCheckDto, LlmCredentialDto, PutLlmCredentialRequest,
 };
 use crate::error::ApiError;
-use crate::port::{LlmCredentialStore, StoredLlmCredential, key_fingerprint};
+use crate::port::Outcome;
+use crate::provider::{KeyCheck, Upstream, validate_key};
 use crate::state::EdgeState;
-
-/// Current unix seconds. A clock read, not a correctness input: the timestamp
-/// is display metadata, so a skewed clock mislabels a row rather than breaking
-/// one.
-fn now_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// Resolve the caller's own namespace via Brain.
-///
-/// This is the authorization boundary: the returned namespace is the one
-/// Brain proved from the caller's credential, not one they asked for.
-async fn caller_namespace(state: &EdgeState, headers: &HeaderMap) -> Result<String, ApiError> {
-    let ident = state.resolve(headers).await?;
-    let client = state.client_for(&ident.credential).await?;
-    // `capabilities` round-trips to Brain and returns the connection's resolved
-    // identity; `whoami` reads the same `ConnectionInfo` without a round trip.
-    let _ = client
-        .capabilities(&GetCapabilitiesRequest::default())
-        .await;
-    Ok(client.connection().namespace.clone())
-}
-
-/// The store, or a `501` explaining that this edge has no BYOK configured.
-fn store_of(state: &EdgeState) -> Result<&std::sync::Arc<dyn LlmCredentialStore>, ApiError> {
-    state.llm_credentials().ok_or_else(|| {
-        ApiError::not_implemented(
-            "BYOK is not configured on this edge: no key-encryption key is set",
-        )
-    })
-}
 
 /// `PUT /v1/llm-credential` — register (or replace) this tenant's provider key.
 ///
 /// # Errors
-/// `400` on a malformed body, `501` when BYOK is unconfigured, `500` if sealing
-/// or storage fails.
+/// `400` on a malformed body or a key the provider rejects, and whatever Brain
+/// answers for the registration itself.
 pub async fn put(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<PutLlmCredentialRequest>,
 ) -> Result<Json<LlmCredentialDto>, ApiError> {
+    // Authenticate BEFORE anything else. Validation would answer 400 to a
+    // caller who has not proved who they are, and the probe below is an
+    // outbound call to a provider — neither belongs on an unauthenticated
+    // path.
+    let ident = state.resolve(&headers).await?;
+    state.admit("llm_credential_put", &ident).await?;
+
     let provider = body.validate().map_err(ApiError::bad_request)?;
     // `validate()` already proved this is a provider we serve, so the lookup
     // cannot fail — but expressing it as a fallible step keeps the two in
     // lockstep if the accepted set ever outgrows the routed set.
     let upstream = Upstream::from_name(provider)
         .ok_or_else(|| ApiError::internal("validated provider is not routable"))?;
-    let store = store_of(&state)?;
-    let namespace = caller_namespace(&state, &headers).await?;
 
-    // Verify the key with the provider before storing it. A typo'd key stored
-    // happily here fails on every subsequent write with an opaque upstream
-    // 401, which reads like a Brain bug rather than a mistyped secret.
+    // Check the key with the provider before handing it on. A typo'd key
+    // registered happily fails on every subsequent write with an opaque
+    // upstream 401, which reads like a Brain fault rather than a mistyped
+    // secret.
     //
     // Fails CLOSED on rejection, OPEN on an outage: "the provider says this
     // key is bad" is actionable now, while "I could not reach the provider"
     // says nothing about the key and must not block a tenant from onboarding
     // during someone else's incident.
-    match crate::app::handlers::llm_proxy::validate_key(upstream, &body.api_key).await {
+    match validate_key(upstream, &body.api_key).await {
         KeyCheck::Valid => {}
         KeyCheck::Rejected(why) => return Err(ApiError::bad_request(why)),
         KeyCheck::Unreachable(why) => tracing::warn!(
-            namespace = %namespace,
             provider,
             reason = %why,
-            "storing provider key without verification",
+            "registering provider key without verification",
         ),
     }
 
-    let binding = SecretBinding {
-        namespace: &namespace,
-        provider,
-    };
-    // Seal before anything else touches the key: from here on only ciphertext
-    // moves, and `body.api_key` goes out of scope with this function.
-    let sealed = state.seal_llm_key(&body.api_key, binding)?;
-
-    let record = StoredLlmCredential {
+    let mut req = LlmCredentialPutRequest {
         provider: provider.to_string(),
         model: body.model.trim().to_string(),
-        sealed,
-        fingerprint: key_fingerprint(&body.api_key),
-        created_at_unix_secs: now_unix_secs(),
+        api_key: body.api_key.clone(),
+        request_id: brain_db_sdk::new_id(),
+        act_as: None,
     };
-    store.put(&namespace, record.clone()).await?;
+    ident.scope(&mut req);
+    let client = state.client_for(&ident.credential).await?;
+
+    let started = Instant::now();
+    let out = client.put_llm_credential(&req).await;
+    state.record(
+        "llm_credential_put",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
 
     tracing::info!(
-        namespace = %namespace,
-        provider,
-        model = %record.model,
-        fingerprint = %record.fingerprint,
+        provider = %resp.provider,
+        model = %resp.model,
+        fingerprint = %resp.fingerprint,
+        replaced = resp.replaced,
         "BYOK provider key registered",
     );
-    Ok(Json(LlmCredentialDto::from(record)))
+    Ok(Json(LlmCredentialDto::from(resp)))
 }
 
 /// `GET /v1/llm-credential` — what is installed for this tenant.
 ///
 /// # Errors
-/// `404` when the tenant has registered nothing, `501` when BYOK is
-/// unconfigured.
+/// `404` when the tenant has registered nothing.
 pub async fn get(
     State(state): State<EdgeState>,
     headers: HeaderMap,
 ) -> Result<Json<LlmCredentialDto>, ApiError> {
-    let store = store_of(&state)?;
-    let namespace = caller_namespace(&state, &headers).await?;
-    let found = store.get(&namespace).await?;
-    let record = found.ok_or_else(|| {
+    let mut req = LlmCredentialGetRequest { act_as: None };
+    let ident = state.resolve(&headers).await?;
+    state.admit("llm_credential_get", &ident).await?;
+    ident.scope(&mut req);
+    let client = state.client_for(&ident.credential).await?;
+
+    let started = Instant::now();
+    let out = client.get_llm_credential(&req).await;
+    state.record(
+        "llm_credential_get",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+
+    let view = resp.credential.ok_or_else(|| {
         ApiError::not_found("no LLM provider key is registered for this namespace")
     })?;
-    Ok(Json(LlmCredentialDto::from(record)))
+    Ok(Json(LlmCredentialDto::from(view)))
 }
 
 /// `DELETE /v1/llm-credential` — remove this tenant's key.
@@ -153,26 +154,59 @@ pub async fn get(
 /// when the call is part of an incident response.
 ///
 /// # Errors
-/// `501` when BYOK is unconfigured.
+/// Whatever Brain answers for the removal.
 pub async fn delete(
     State(state): State<EdgeState>,
     headers: HeaderMap,
 ) -> Result<Json<DeleteLlmCredentialDto>, ApiError> {
-    let store = store_of(&state)?;
-    let namespace = caller_namespace(&state, &headers).await?;
-    let deleted = store.delete(&namespace).await?;
-    if deleted {
-        tracing::info!(namespace = %namespace, "BYOK provider key removed");
+    let mut req = LlmCredentialDeleteRequest {
+        request_id: brain_db_sdk::new_id(),
+        act_as: None,
+    };
+    let ident = state.resolve(&headers).await?;
+    state.admit("llm_credential_delete", &ident).await?;
+    ident.scope(&mut req);
+    let client = state.client_for(&ident.credential).await?;
+
+    let started = Instant::now();
+    let out = client.delete_llm_credential(&req).await;
+    state.record(
+        "llm_credential_delete",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+
+    if resp.existed {
+        tracing::info!("BYOK provider key removed");
     }
-    Ok(Json(DeleteLlmCredentialDto { deleted }))
+    Ok(Json(DeleteLlmCredentialDto {
+        deleted: resp.existed,
+    }))
 }
 
-/// Probe a key against its provider and project the outcome.
+/// `POST /v1/llm-credential/test` — check a key WITHOUT registering it.
 ///
-/// Shared by `test` (a key the caller supplies) and `verify` (the one
-/// already stored), so the two cannot drift in how they classify a provider's
-/// answer.
-async fn probe(provider: &str, key: &str) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
+/// For trying a key before committing to it. Nothing is written and nothing
+/// existing is touched, so this is safe to call against a namespace that
+/// already has a working credential. It is the one credential route that does
+/// not reach Brain: the key under test is the caller's, supplied in the body.
+///
+/// # Errors
+/// `400` on a malformed body.
+pub async fn test(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+    ApiJson(body): ApiJson<PutLlmCredentialRequest>,
+) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
+    // Authenticated even though nothing is stored: this makes an outbound
+    // call to a provider, and an unauthenticated caller must not be able to
+    // spend this edge's network on one.
+    let ident = state.resolve(&headers).await?;
+    state.admit("llm_credential_test", &ident).await?;
+
+    let provider = body.validate().map_err(ApiError::bad_request)?;
     let upstream = Upstream::from_name(provider).ok_or_else(|| {
         // A provider this build cannot route is version skew, not a bad key —
         // reporting it as `rejected` would send an operator hunting for a
@@ -181,58 +215,54 @@ async fn probe(provider: &str, key: &str) -> Result<Json<LlmCredentialCheckDto>,
             "provider `{provider}` is not routable by this build"
         ))
     })?;
-    let check = crate::app::handlers::llm_proxy::validate_key(upstream, key).await;
+    let check = validate_key(upstream, &body.api_key).await;
     Ok(Json(LlmCredentialCheckDto::from_check(check, provider)))
 }
 
-/// `POST /v1/llm-credential/test` — check a key WITHOUT storing it.
-///
-/// For trying a key before committing to it. Nothing is written and nothing
-/// existing is touched, so this is safe to call against a namespace that
-/// already has a working credential.
-///
-/// # Errors
-/// `400` on a malformed body, `501` when BYOK is unconfigured.
-pub async fn test(
-    State(state): State<EdgeState>,
-    headers: HeaderMap,
-    ApiJson(body): ApiJson<PutLlmCredentialRequest>,
-) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
-    let provider = body.validate().map_err(ApiError::bad_request)?;
-    // Gated on BYOK being configured even though nothing is stored: an edge
-    // that cannot hold a key has no business probing providers on a caller's
-    // behalf, and answering here would imply a registration that will 501.
-    let _ = store_of(&state)?;
-    let _namespace = caller_namespace(&state, &headers).await?;
-    probe(provider, &body.api_key).await
-}
-
-/// `POST /v1/llm-credential/verify` — re-check the key already stored.
+/// `POST /v1/llm-credential/verify` — re-check the key already registered.
 ///
 /// A key that worked at registration can be revoked or run out of credit
 /// later, and without this the first sign of it is an opaque upstream 401 on
 /// a write — which reads like a Brain fault rather than an expired secret.
 ///
+/// Brain answers this, not a probe from here, and that is the stronger check:
+/// it resolves the credential through the same path derivation uses, so a pass
+/// means the stages will actually work. An independent probe can pass while
+/// derivation still fails.
+///
 /// # Errors
-/// `404` when nothing is registered, `501` when BYOK is unconfigured.
+/// `404` when nothing is registered.
 pub async fn verify(
     State(state): State<EdgeState>,
     headers: HeaderMap,
 ) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
-    let store = store_of(&state)?;
-    let namespace = caller_namespace(&state, &headers).await?;
-    let record = store.get(&namespace).await?.ok_or_else(|| {
-        ApiError::not_found("no LLM provider key is registered for this namespace")
-    })?;
+    let mut req = LlmCredentialVerifyRequest {
+        request_id: brain_db_sdk::new_id(),
+        act_as: None,
+    };
+    let ident = state.resolve(&headers).await?;
+    state.admit("llm_credential_verify", &ident).await?;
+    ident.scope(&mut req);
+    let client = state.client_for(&ident.credential).await?;
 
-    let opened = state.open_llm_key(
-        &record.sealed,
-        SecretBinding {
-            namespace: &namespace,
-            provider: &record.provider,
-        },
-    )?;
-    let key = String::from_utf8(opened.to_vec())
-        .map_err(|_| ApiError::internal("stored provider key is not valid UTF-8"))?;
-    probe(&record.provider, &key).await
+    let started = Instant::now();
+    let out = client.verify_llm_credential(&req).await;
+    state.record(
+        "llm_credential_verify",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+
+    if matches!(resp.outcome, VerifyOutcome::NoCredential) {
+        return Err(ApiError::not_found(
+            "no LLM provider key is registered for this namespace",
+        ));
+    }
+    Ok(Json(LlmCredentialCheckDto::from_verify(
+        resp.outcome,
+        resp.provider,
+        resp.detail,
+    )))
 }

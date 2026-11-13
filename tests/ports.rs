@@ -28,11 +28,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
-use brain_edge::crypto::KeyRing;
-use brain_edge::port::{
-    CredentialResolver, InMemoryLlmCredentialStore, MeterEvent, MeteringSink, Outcome,
-    ResolvedCredential,
-};
+use brain_edge::port::{CredentialResolver, MeterEvent, MeteringSink, Outcome, ResolvedCredential};
 use brain_edge::{ApiError, EdgeConfig, EdgeState};
 use tower::ServiceExt;
 
@@ -105,7 +101,7 @@ impl MeteringSink for RecordingMeter {
 ///
 /// This list covers the routes that authenticate through the resolver. The
 /// broker routes authenticate against a deployment token instead and are held
-/// in `BROKER_ROUTES` below; `the_route_table_covers_the_whole_surface` counts
+/// `the_route_table_covers_the_whole_surface` counts
 /// the router's registrations so neither table can fall behind it unnoticed.
 const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("GET", "/v1/whoami", None),
@@ -322,49 +318,20 @@ const ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("POST", "/v1/llm-credential/verify", None),
 ];
 
-/// The broker routes, which do **not** authenticate through the resolver.
-///
-/// Brain calls these with a deployment-wide token (see `llm_proxy`), not with a
-/// tenant credential, so the resolver guarantee above does not apply to them
-/// and asserting it would be wrong. They are listed so the surface count stays
-/// honest, and `the_broker_routes_never_reach_the_resolver` pins what does hold
-/// for them: an unauthenticated call is refused, consults no resolver, and
-/// bills nothing.
-const BROKER_ROUTES: &[(&str, &str, Option<&str>)] = &[
-    (
-        "POST",
-        "/llm/ns/acme/openai/v1/chat/completions",
-        Some(r#"{"model":"gpt-4o-mini","messages":[]}"#),
-    ),
-    (
-        "POST",
-        "/llm/ns/acme/anthropic/v1/messages",
-        Some(r#"{"model":"claude-haiku-4-5","messages":[]}"#),
-    ),
-    ("GET", "/llm/ns/acme/resolve", None),
-];
-
 fn config() -> EdgeConfig {
     // Never connected to: the resolver rejects before any pool call.
     EdgeConfig::from_env().unwrap_or_else(|_| unreachable!("defaults are always valid"))
 }
 
-/// A 32-byte KEK, hex, under the id `test`. Not a secret: it seals nothing that
-/// outlives the test process, and the store it seals into is in-memory.
-const TEST_KEK_SPEC: &str = "test:1111111111111111111111111111111111111111111111111111111111111111";
-
-/// State with BYOK installed.
+/// State for the credential-route tests.
 ///
-/// The credential routes consult `store_of` before the resolver, so on an edge
-/// without a keyring they answer 501 without authenticating. Installing one
-/// here is what lets those routes participate in the resolver guarantee rather
-/// than being exempted from it.
+/// The credential routes are ordinary forwarding routes: they resolve the
+/// caller and carry the identity to Brain like every other verb, so there is
+/// nothing to install here any more. Kept as a named helper because the tests
+/// below read better naming why they build a state than repeating the
+/// constructor.
 fn byok_state(resolver: Arc<dyn CredentialResolver>, meter: Arc<dyn MeteringSink>) -> EdgeState {
-    let keyring = KeyRing::from_spec(TEST_KEK_SPEC, "test").expect("test keyring is well-formed");
-    EdgeState::with_ports(config(), resolver, meter).with_llm_credentials(
-        Arc::new(InMemoryLlmCredentialStore::default()),
-        Arc::new(keyring),
-    )
+    EdgeState::with_ports(config(), resolver, meter)
 }
 
 async fn send(
@@ -423,7 +390,7 @@ async fn an_unauthenticated_request_is_never_metered() {
     let resolver = SpyResolver::rejecting();
     let meter = Arc::new(RecordingMeter::default());
 
-    for (method, path, body) in ROUTES.iter().chain(BROKER_ROUTES) {
+    for (method, path, body) in ROUTES {
         let state = byok_state(resolver.clone(), meter.clone());
         let _ = send(state, method, path, *body).await;
     }
@@ -456,117 +423,23 @@ async fn the_route_table_covers_the_whole_surface() {
     // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
     // Both counts up front: clippy's `items_after_statements` (denied here) will
     // not have a `const` introduced partway down a function body.
-    const REGISTERED_PATHS: usize = 45;
-    const SERVED_COMBOS: usize = 61;
+    const REGISTERED_PATHS: usize = 42;
+    const SERVED_COMBOS: usize = 58;
 
     let router_src = include_str!("../src/app/mod.rs");
     let registrations = router_src.matches(".route(").count();
     assert_eq!(
         registrations, REGISTERED_PATHS,
         "app::router registers {registrations} paths but this test expects \
-         {REGISTERED_PATHS}. A path was added or removed: list it in ROUTES (if it \
-         authenticates through the resolver) or in BROKER_ROUTES (if it \
-         authenticates against the deployment token), then update this count."
+         {REGISTERED_PATHS}. A path was added or removed: add it to ROUTES and update \
+         this count."
     );
 
     assert_eq!(
-        ROUTES.len() + BROKER_ROUTES.len(),
+        ROUTES.len(),
         SERVED_COMBOS,
         "the router serves {SERVED_COMBOS} method+path combos; update the tables so \
          the resolver and metering guarantees still cover all of them"
-    );
-}
-
-#[tokio::test]
-async fn a_keyless_edge_refuses_byok_before_authenticating() {
-    // Pinning a real property of the design, not endorsing it — the same
-    // treatment `validation_runs_before_authentication` gets.
-    //
-    // Every credential handler asks for the store before resolving the
-    // caller, so an edge with no keyring answers 501 to anyone. The consequence
-    // is that an unauthenticated caller can tell a BYOK-capable edge from one
-    // without a KEK.
-    //
-    // `test` is held to the same line even though it stores nothing: an edge
-    // that cannot hold a key has no business probing providers on a caller's
-    // behalf, and answering there would imply a registration that will 501.
-    //
-    // Not an auth bypass, and not reachable where it would matter: with no
-    // keyring there is no credential to disclose or modify, and on an edge that
-    // has one these routes resolve the caller first — which is what
-    // `every_route_consults_the_resolver` proves, since the states it builds
-    // install a keyring. Recorded here so reordering those two lines is a
-    // visible change rather than a silent one.
-    /// How many trailing `ROUTES` entries are the credential verbs. They are
-    /// kept last so this slice can reach them; adding one means bumping this.
-    const CREDENTIAL_VERBS: usize = 5;
-
-    let resolver = SpyResolver::rejecting();
-    let meter = Arc::new(RecordingMeter::default());
-
-    for (method, path, body) in &ROUTES[ROUTES.len() - CREDENTIAL_VERBS..] {
-        assert!(
-            path.starts_with("/v1/llm-credential"),
-            "this test slices the last {CREDENTIAL_VERBS} ROUTES entries, which \
-             must be the credential verbs; the table was reordered (found {path})"
-        );
-        let state = EdgeState::with_ports(config(), resolver.clone(), meter.clone());
-        let resp = send(state, method, path, *body).await;
-        assert_eq!(
-            resp.status(),
-            StatusCode::NOT_IMPLEMENTED,
-            "{method} {path}: a keyless edge should answer 501, not {}",
-            resp.status()
-        );
-    }
-
-    assert_eq!(
-        resolver.calls(),
-        0,
-        "the credential routes authenticated on a keyless edge; that is an \
-         improvement, so move these routes' expectation rather than deleting it"
-    );
-    assert!(meter.events().is_empty(), "a 501 was metered as usage");
-}
-
-#[tokio::test]
-async fn the_broker_routes_never_reach_the_resolver() {
-    // The companion to `every_route_consults_the_resolver`, for the routes that
-    // deliberately do not. Brain reaches the broker with a deployment token, so
-    // these must be refused without a tenant credential ever being resolved —
-    // a broker route that fell through to the resolver would make Brain's
-    // service identity look like a tenant's.
-    //
-    // The exact status is not pinned here: it depends on whether a broker token
-    // is configured in the ambient environment (501 when absent, 401 when
-    // present and unmatched). `llm_proxy`'s own tests pin both against
-    // `authenticate_with`, which takes the token as an argument instead of
-    // reading the environment. What matters here is that the request is refused
-    // and that neither port is touched.
-    let resolver = SpyResolver::rejecting();
-    let meter = Arc::new(RecordingMeter::default());
-
-    for (method, path, body) in BROKER_ROUTES {
-        let state = byok_state(resolver.clone(), meter.clone());
-        let resp = send(state, method, path, *body).await;
-
-        assert!(
-            resp.status().is_client_error() || resp.status().is_server_error(),
-            "{method} {path}: an unauthenticated broker call must be refused, got {}",
-            resp.status()
-        );
-    }
-
-    assert_eq!(
-        resolver.calls(),
-        0,
-        "a broker route consulted the tenant resolver; Brain authenticates with \
-         the deployment token, so resolving a tenant here would conflate the two"
-    );
-    assert!(
-        meter.events().is_empty(),
-        "a refused broker call was metered as tenant usage: {:?}",
-        meter.events()
     );
 }
 
@@ -687,4 +560,74 @@ async fn the_self_host_default_meters_nothing_and_forwards_the_bearer() {
 
     // No panic, no state: the default sink is a no-op by construction.
     state.record("encode", &ident, Outcome::Ok, Duration::from_millis(1));
+}
+
+/// Every wire request that carries `act_as` implements [`Scoped`].
+///
+/// The list in `src/port/scoped.rs` is hand-written, and only one direction
+/// of drift is protected by the compiler: naming a type with no `act_as`
+/// fails to build, while a type that HAS one and is missing from the list
+/// compiles fine. Under the hosted gateway that verb then runs as the shared
+/// service principal instead of the tenant — every tenant writing to one
+/// namespace, reported as success.
+///
+/// That is not hypothetical. The four `LlmCredential*` requests grew an
+/// `act_as` and were never added, so the gateway could not use this path at
+/// all and kept a second credential store of its own to work around it.
+#[test]
+fn every_request_carrying_act_as_is_scoped() {
+    // The SDK's wire types are the protocol's shape as this edge sees it.
+    let types_rs = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../brain-sdk/rust/src/wire/types.rs"),
+    );
+    let Ok(types_rs) = types_rs else {
+        // The sibling checkout is not always present (CI builds from the
+        // published crate). Skipping is correct; failing would be noise.
+        eprintln!("brain-sdk checkout absent — skipping act_as drift check");
+        return;
+    };
+
+    // Collect `pub struct X { … pub act_as: … }` across the file.
+    let mut carries_act_as: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in types_rs.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("pub struct ") {
+            current = rest
+                .split([' ', '{', '<', '(', ';'])
+                .next()
+                .map(str::to_string);
+        } else if t.starts_with("pub act_as:") {
+            if let Some(name) = current.take() {
+                carries_act_as.push(name);
+            }
+        }
+    }
+    assert!(
+        carries_act_as.len() > 40,
+        "parsed only {} act_as-carrying requests — the parse, not the surface, is what broke",
+        carries_act_as.len()
+    );
+
+    let scoped_rs = include_str!("../src/port/scoped.rs");
+    let list = scoped_rs
+        .split_once("impl_scoped!(")
+        .and_then(|(_, rest)| rest.split_once(");"))
+        .map(|(inner, _)| inner)
+        .expect("src/port/scoped.rs must invoke impl_scoped!");
+
+    let missing: Vec<&String> = carries_act_as
+        .iter()
+        .filter(|name| {
+            !list
+                .lines()
+                .any(|l| l.trim().trim_end_matches(',') == name.as_str())
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these requests carry `act_as` but are not Scoped, so they would run as \
+         the connection identity under the hosted gateway: {missing:?}"
+    );
 }
