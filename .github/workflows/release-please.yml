@@ -55,6 +55,11 @@ jobs:
       # be run by hand.
       - uses: googleapis/release-please-action@v5
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          # No fallback to GITHUB_TOKEN, deliberately. Events raised with
+          # the default token do not start workflow runs, so a tag cut with
+          # it is a tag nothing publishes — and a silent fallback makes that
+          # look like a healthy release. An unset secret fails this step
+          # instead, which is the only way anyone finds out in time.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
