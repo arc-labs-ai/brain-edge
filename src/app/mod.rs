@@ -135,20 +135,6 @@ fn credential_router() -> Router<EdgeState> {
             "/v1/llm-credential/verify",
             post(handlers::llm_credential::verify),
         )
-        // The broker. Paths mirror each provider's native shape so Brain's
-        // existing provider clients work by pointing `base_url` here.
-        .route(
-            "/llm/ns/{namespace}/openai/v1/chat/completions",
-            post(handlers::llm_proxy::openai_chat_completions),
-        )
-        .route(
-            "/llm/ns/{namespace}/anthropic/v1/messages",
-            post(handlers::llm_proxy::anthropic_messages),
-        )
-        .route(
-            "/llm/ns/{namespace}/resolve",
-            get(handlers::llm_proxy::resolve),
-        )
 }
 
 /// The memory verbs.

@@ -15,18 +15,18 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::handlers::llm_proxy::KeyCheck;
+use crate::provider::KeyCheck;
 
-use crate::port::StoredLlmCredential;
+use brain_db_sdk::wire::types::{LlmCredentialPutResponse, LlmCredentialView, VerifyOutcome};
 
 /// The providers a tenant may register a key for.
 ///
-/// Derived from [`crate::app::handlers::llm_proxy::Upstream`] rather than
+/// Derived from [`crate::provider::Upstream`] rather than
 /// listed separately: the value selects which upstream the proxy talks to and
 /// enters the sealing AAD, so a provider accepted here but unroutable there
 /// would let a caller mint ciphertext nothing can ever serve.
 pub fn supported_providers() -> Vec<&'static str> {
-    use crate::app::handlers::llm_proxy::Upstream;
+    use crate::provider::Upstream;
     Upstream::ALL.into_iter().map(Upstream::provider).collect()
 }
 
@@ -65,7 +65,7 @@ impl PutLlmCredentialRequest {
     /// failure — an error string is the most likely thing to be logged.
     pub fn validate(&self) -> Result<&'static str, String> {
         let provider = self.provider.trim().to_ascii_lowercase();
-        let Some(known) = crate::app::handlers::llm_proxy::Upstream::from_name(&provider) else {
+        let Some(known) = crate::provider::Upstream::from_name(&provider) else {
             return Err(format!(
                 "unsupported provider `{}`: expected one of {}",
                 self.provider,
@@ -100,13 +100,29 @@ pub struct LlmCredentialDto {
     pub created_at_unix_secs: u64,
 }
 
-impl From<StoredLlmCredential> for LlmCredentialDto {
-    fn from(r: StoredLlmCredential) -> Self {
+/// Brain reports nanoseconds; this surface has always reported seconds.
+fn secs_from_nanos(nanos: u64) -> u64 {
+    nanos / 1_000_000_000
+}
+
+impl From<LlmCredentialPutResponse> for LlmCredentialDto {
+    fn from(r: LlmCredentialPutResponse) -> Self {
         Self {
             provider: r.provider,
             model: r.model,
             fingerprint: r.fingerprint,
-            created_at_unix_secs: r.created_at_unix_secs,
+            created_at_unix_secs: secs_from_nanos(r.created_at_unix_nanos),
+        }
+    }
+}
+
+impl From<LlmCredentialView> for LlmCredentialDto {
+    fn from(r: LlmCredentialView) -> Self {
+        Self {
+            provider: r.provider,
+            model: r.model,
+            fingerprint: r.fingerprint,
+            created_at_unix_secs: secs_from_nanos(r.created_at_unix_nanos),
         }
     }
 }
@@ -245,6 +261,61 @@ pub struct LlmCredentialCheckDto {
 }
 
 impl LlmCredentialCheckDto {
+    /// Project Brain's verification outcome.
+    ///
+    /// Brain resolves the credential through the same path derivation uses, so
+    /// this says more than a probe from here could: a pass means the stages
+    /// will actually work, where an independent probe can pass while
+    /// derivation still fails.
+    #[must_use]
+    pub fn from_verify(
+        outcome: VerifyOutcome,
+        provider: Option<String>,
+        detail: Option<String>,
+    ) -> Self {
+        let provider = provider.unwrap_or_default();
+        match outcome {
+            VerifyOutcome::Ok => Self {
+                status: "valid",
+                valid: Some(true),
+                reason: None,
+                provider,
+            },
+            VerifyOutcome::Unauthorized => Self {
+                status: "rejected",
+                valid: Some(false),
+                reason: detail,
+                provider,
+            },
+            // The key authenticated and the model did not answer. `valid` is
+            // false because this endpoint answers "will derivation work",
+            // not "is the secret well-formed" — a green tick beside writes
+            // that fail is the thing this surface exists to prevent. The
+            // status keeps the distinction a reader needs.
+            VerifyOutcome::ModelUnavailable => Self {
+                status: "model_unavailable",
+                valid: Some(false),
+                reason: detail,
+                provider,
+            },
+            // `valid` stays absent for both: neither learned anything about
+            // the key itself, and `false` would read as "the provider
+            // rejected it".
+            VerifyOutcome::Unreachable => Self {
+                status: "unreachable",
+                valid: None,
+                reason: detail,
+                provider,
+            },
+            VerifyOutcome::NoCredential => Self {
+                status: "missing",
+                valid: None,
+                reason: detail,
+                provider,
+            },
+        }
+    }
+
     /// Project a probe outcome, naming the provider that was asked.
     #[must_use]
     pub fn from_check(check: KeyCheck, provider: &str) -> Self {

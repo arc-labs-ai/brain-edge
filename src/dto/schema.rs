@@ -575,7 +575,10 @@ impl ListSchemasResponseDto {
     /// Fold the streamed frames into one page.
     #[must_use]
     pub fn from_frames(frames: Vec<SchemaListResponseFrame>) -> Self {
-        let namespace = frames.first().map_or_default(|f| f.namespace.clone());
+        let namespace = frames
+            .first()
+            .map(|f| f.namespace.clone())
+            .unwrap_or_default();
         let total = frames.first().map_or(0, |f| f.total);
         // The LAST frame's cursor: an earlier one would replay rows this page
         // already returned.

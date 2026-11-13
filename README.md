@@ -169,21 +169,10 @@ and write-only: nothing here returns the key itself.
 | `POST` | `/v1/llm-credential/test` | `{ provider, model, api_key }` | `{ status, valid, reason, provider }` — checks a candidate key **without storing it** |
 | `POST` | `/v1/llm-credential/verify` | — | `{ status, valid, reason, provider }` — the same shape, for the key already stored |
 
-⚠️ `PUT` and `/test` carry a **raw provider key in the request body**. Deleting
-the credential stops every write in the namespace, because extraction and HyPE
-are mandatory rather than optional enrichment.
-
-### LLM broker (proxy plane)
-
-A pass-through to the namespace's own provider, so an agent can reach a model
-with the key Brain already holds instead of being given one. Not part of the
-`/v1` data plane — these keep the provider's own request and response shapes.
-
-| Method | Path                                             | Body / query            | Returns |
-| ------ | ------------------------------------------------ | ----------------------- | ------- |
-| `GET`  | `/llm/ns/{namespace}/resolve`                    | —                       | `{ provider, model, source }` — which provider a namespace resolves to |
-| `POST` | `/llm/ns/{namespace}/openai/v1/chat/completions` | the provider's own body | the provider's own response, streamed through unchanged |
-| `POST` | `/llm/ns/{namespace}/anthropic/v1/messages`      | the provider's own body | the provider's own response, streamed through unchanged |
+⚠️ `PUT` and `/test` carry a **raw provider key in the request body**. The edge
+keeps none of it: the key is forwarded to Brain, which seals it and is the only
+holder. Deleting the credential stops every write in the namespace, because
+extraction and HyPE are mandatory rather than optional enrichment.
 
 ## Configuration (env)
 
@@ -200,10 +189,6 @@ with the key Brain already holds instead of being given one. Not part of the
 | `BRAIN_EDGE_WIRE_RATE_CAPACITY` | `0`              | Per-credential token-bucket burst on the wire proxy (`0` = no limit) |
 | `BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC` | `0`        | Per-credential refill rate, ops/sec (`0` = no limit) |
 | `BRAIN_EDGE_PLANE`              | `both`           | Which plane this process serves — `both`, `data` (memory verbs only; **no key material is reachable in this process**), or `credential` (BYOK management + broker only). An unrecognised value is a hard error, not a silent fallback to `both` |
-| `BRAIN_EDGE_LLM_CREDENTIAL_FILE` | unset           | Path to a durable BYOK credential file. **Unset = the store is in-memory**, so registered keys do not survive a restart |
-| `BRAIN_EDGE_LLM_KEKS`           | unset            | Key-encryption keys as `id:hex,id:hex,…`. Unset = BYOK is not configured. Never held on a config struct — read once into the key ring so key material cannot reach a `Debug` print or a startup log |
-| `BRAIN_EDGE_LLM_KEK_CURRENT`    | unset            | Which KEK id new seals use. Optional with exactly one key, where the id is unambiguous; **required with several** — guessing which key to seal under is not a safe default |
-| `BRAIN_EDGE_LLM_PROXY_TOKEN`    | unset            | Bearer the LLM broker plane requires on `/llm/ns/...`, i.e. Brain's own identity to this edge |
 | `RUST_LOG`                      | `brain_edge=info`| Log filter                                          |
 
 ## What a failing request looks like

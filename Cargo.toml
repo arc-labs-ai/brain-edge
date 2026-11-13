@@ -2,6 +2,14 @@
 name = "brain-edge"
 version = "0.4.2"
 edition = "2021"
+# The oldest toolchain this crate builds on. Stated, not assumed: without it
+# Cargo makes no promise, and a consumer pinned to an older rustc resolves the
+# crate happily and then fails deep inside it — naming a missing std method
+# rather than a version floor.
+#
+# 1.89 is set by `uuid`, not by anything written here, and the floor is left
+# where its dependencies put it rather than held down by pinning them back.
+rust-version = "1.89"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
 repository = "https://github.com/arc-labs-ai/brain-edge"
