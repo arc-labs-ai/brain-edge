@@ -1,5 +1,6 @@
 //! The HTTP surface: the data-plane router.
 
+pub mod extract;
 pub mod handlers;
 pub mod middleware;
 pub mod names;
@@ -180,6 +181,7 @@ fn data_router() -> Router<EdgeState> {
             "/v1/entities",
             post(handlers::entity::create).get(handlers::entity::list),
         )
+        .route("/v1/entity-types", get(handlers::entity::entity_types))
         .route("/v1/entities/resolve", post(handlers::entity::resolve))
         .route(
             "/v1/entities/{id}",

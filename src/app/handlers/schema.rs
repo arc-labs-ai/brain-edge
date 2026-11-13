@@ -2,10 +2,11 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::dto::schema::{
     ListExtractorsResponseDto, ListSchemasQuery, ListSchemasResponseDto, SchemaDropQuery,
     SchemaDropResponseDto, SchemaDto, SchemaGetQuery, SchemaReplaceBody, SchemaReplaceDto,
@@ -21,7 +22,7 @@ use crate::state::EdgeState;
 pub async fn get(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<SchemaGetQuery>,
+    ApiQuery(query): ApiQuery<SchemaGetQuery>,
 ) -> Result<Json<SchemaDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
@@ -43,7 +44,7 @@ pub async fn get(
 pub async fn upload(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<SchemaUploadBody>,
+    ApiJson(body): ApiJson<SchemaUploadBody>,
 ) -> Result<Json<SchemaUploadDto>, ApiError> {
     let mut req = body.to_request()?;
     let ident = state.resolve(&headers).await?;
@@ -67,9 +68,9 @@ pub async fn upload(
 pub async fn validate(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<SchemaValidateBody>,
+    ApiJson(body): ApiJson<SchemaValidateBody>,
 ) -> Result<Json<SchemaValidateDto>, ApiError> {
-    let mut req = body.to_request();
+    let mut req = body.to_request()?;
     let ident = state.resolve(&headers).await?;
     state.admit("validate_schema", &ident).await?;
     ident.scope(&mut req);
@@ -100,9 +101,9 @@ pub async fn validate(
 pub async fn replace(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<SchemaReplaceBody>,
+    ApiJson(body): ApiJson<SchemaReplaceBody>,
 ) -> Result<Json<SchemaReplaceDto>, ApiError> {
-    let mut req = body.to_request().map_err(ApiError::bad_request)?;
+    let mut req = body.to_request()?;
     let ident = state.resolve(&headers).await?;
     state.admit("replace_schema", &ident).await?;
     ident.scope(&mut req);
@@ -128,7 +129,7 @@ pub async fn replace(
 pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<ListSchemasQuery>,
+    ApiQuery(query): ApiQuery<ListSchemasQuery>,
 ) -> Result<Json<ListSchemasResponseDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     state.admit("list_schemas", &ident).await?;
@@ -186,15 +187,13 @@ pub async fn drop(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path((kind, name)): Path<(String, String)>,
-    Query(query): Query<SchemaDropQuery>,
+    ApiQuery(query): ApiQuery<SchemaDropQuery>,
 ) -> Result<Json<SchemaDropResponseDto>, ApiError> {
     let ident = state.resolve(&headers).await?;
     state.admit("drop_schema", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
     // See `list` for why the namespace comes from `ident`.
-    let mut req = query
-        .to_request(ident.namespace(client.connection()), &kind, &name)
-        .map_err(ApiError::bad_request)?;
+    let mut req = query.to_request(ident.namespace(client.connection()), &kind, &name)?;
     ident.scope(&mut req);
 
     let started = Instant::now();

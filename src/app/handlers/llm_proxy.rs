@@ -176,8 +176,7 @@ fn presented_token(headers: &HeaderMap) -> &str {
             v.strip_prefix("Bearer ")
                 .or_else(|| v.strip_prefix("bearer "))
         })
-        .map(str::trim)
-        .unwrap_or_default()
+        .map_or_default(str::trim)
 }
 
 /// The testable core of [`authenticate`]: the configured token is a parameter

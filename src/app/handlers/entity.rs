@@ -3,17 +3,20 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::dto::entity::{
     CreateEntityBody, CreateEntityResponseDto, EntityDetailDto, ListEntitiesQuery,
-    ListEntitiesResponseDto, MergeEntityBody, MergeEntityResponseDto, RenameEntityBody,
-    ResolveEntityBody, ResolveEntityResponseDto, TombstoneEntityQuery, TombstoneEntityResponseDto,
-    TraverseBody, TraverseResponseDto, UnmergeEntityResponseDto, UpdateEntityBody,
-    get_request_from_id, tombstone_request, unmerge_request,
+    ListEntitiesResponseDto, ListEntityTypesResponseDto, MergeEntityBody, MergeEntityResponseDto,
+    RenameEntityBody, ResolveEntityBody, ResolveEntityResponseDto, TombstoneEntityQuery,
+    TombstoneEntityResponseDto, TraverseBody, TraverseResponseDto, UnmergeEntityResponseDto,
+    UpdateEntityBody, get_request_from_id, tombstone_request, unmerge_request,
 };
+use brain_db_sdk::wire::types::EntityTypeListRequest;
+
 use crate::error::ApiError;
 use crate::port::Outcome;
 use crate::state::EdgeState;
@@ -22,7 +25,7 @@ use crate::state::EdgeState;
 pub async fn create(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<CreateEntityBody>,
+    ApiJson(body): ApiJson<CreateEntityBody>,
 ) -> Result<Json<CreateEntityResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -46,7 +49,7 @@ pub async fn create(
 pub async fn resolve(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<ResolveEntityBody>,
+    ApiJson(body): ApiJson<ResolveEntityBody>,
 ) -> Result<Json<ResolveEntityResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -70,7 +73,7 @@ pub async fn resolve(
 pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<ListEntitiesQuery>,
+    ApiQuery(query): ApiQuery<ListEntitiesQuery>,
 ) -> Result<Json<ListEntitiesResponseDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -118,7 +121,7 @@ pub async fn traverse(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<TraverseBody>,
+    ApiJson(body): ApiJson<TraverseBody>,
 ) -> Result<Json<TraverseResponseDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -143,7 +146,7 @@ pub async fn update(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<UpdateEntityBody>,
+    ApiJson(body): ApiJson<UpdateEntityBody>,
 ) -> Result<Json<EntityDetailDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -169,7 +172,7 @@ pub async fn rename(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<RenameEntityBody>,
+    ApiJson(body): ApiJson<RenameEntityBody>,
 ) -> Result<Json<EntityDetailDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -199,7 +202,7 @@ pub async fn merge(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<MergeEntityBody>,
+    ApiJson(body): ApiJson<MergeEntityBody>,
 ) -> Result<Json<MergeEntityResponseDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -252,7 +255,7 @@ pub async fn tombstone(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<TombstoneEntityQuery>,
+    ApiQuery(query): ApiQuery<TombstoneEntityQuery>,
 ) -> Result<Json<TombstoneEntityResponseDto>, ApiError> {
     let mut req = tombstone_request(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -270,4 +273,34 @@ pub async fn tombstone(
     );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TombstoneEntityResponseDto::from(resp)))
+}
+
+/// `GET /v1/entity-types` — the entity types this caller can use, with the
+/// ids every other entity route takes (`ENTITY_TYPE_LIST`).
+///
+/// Read-only. It exists because `entity_type_id` is a number the registry
+/// assigns and nothing else reported it: a schema document names its types
+/// without ids, and a type the extractor coined appears in no document, so a
+/// caller holding `acme:Device` from a recalled memory had no way to reach
+/// the id `POST /v1/entities` and `GET /v1/entities` require.
+pub async fn entity_types(
+    State(state): State<EdgeState>,
+    headers: HeaderMap,
+) -> Result<Json<ListEntityTypesResponseDto>, ApiError> {
+    let mut req = EntityTypeListRequest::default();
+    let ident = state.resolve(&headers).await?;
+    state.admit("entity_type_list", &ident).await?;
+    ident.scope(&mut req);
+    let client = state.client_for(&ident.credential).await?;
+
+    let started = Instant::now();
+    let out = client.entity_type_list(&req).await;
+    state.record(
+        "entity_type_list",
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
+    let resp = out.map_err(|e| ApiError::from_brain(&e))?;
+    Ok(Json(ListEntityTypesResponseDto::from(resp)))
 }

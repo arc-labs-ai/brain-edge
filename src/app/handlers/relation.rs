@@ -3,10 +3,11 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::app::names::entity_names;
 use crate::dto::relation::{
     CreateRelationBody, CreateRelationResponseDto, GetRelationQuery, ListRelationsQuery,
@@ -23,7 +24,7 @@ pub async fn get(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<GetRelationQuery>,
+    ApiQuery(query): ApiQuery<GetRelationQuery>,
 ) -> Result<Json<RelationDetailDto>, ApiError> {
     let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -48,7 +49,7 @@ pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<ListRelationsQuery>,
+    ApiQuery(query): ApiQuery<ListRelationsQuery>,
 ) -> Result<Json<ListRelationsResponseDto>, ApiError> {
     let side = query.side().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -102,7 +103,7 @@ pub async fn list(
 pub async fn create(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<CreateRelationBody>,
+    ApiJson(body): ApiJson<CreateRelationBody>,
 ) -> Result<(StatusCode, Json<CreateRelationResponseDto>), ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -135,7 +136,7 @@ pub async fn supersede(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<SupersedeRelationBody>,
+    ApiJson(body): ApiJson<SupersedeRelationBody>,
 ) -> Result<(StatusCode, Json<SupersedeRelationResponseDto>), ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -163,7 +164,7 @@ pub async fn tombstone(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<TombstoneRelationQuery>,
+    ApiQuery(query): ApiQuery<TombstoneRelationQuery>,
 ) -> Result<Json<TombstoneRelationResponseDto>, ApiError> {
     let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;

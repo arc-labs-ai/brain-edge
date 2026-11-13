@@ -7,10 +7,11 @@
 
 use std::time::Instant;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 
+use crate::app::extract::ApiQuery;
 use crate::dto::space::{
     CreateSpaceBody, ListSpacesQuery, ListSpacesResponseDto, SpaceErasedDto, SpaceProvisionDto,
     delete_space_request,
@@ -54,7 +55,7 @@ pub async fn create(
 pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<ListSpacesQuery>,
+    ApiQuery(query): ApiQuery<ListSpacesQuery>,
 ) -> Result<Json<ListSpacesResponseDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;

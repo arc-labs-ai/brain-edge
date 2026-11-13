@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::Json;
 use brain_db_sdk::wire::types::{
@@ -11,6 +11,7 @@ use brain_db_sdk::wire::types::{
 };
 use brain_db_sdk::{EncodeBuilder, ForgetBuilder, RecallBuilder};
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::dto::memory::{
     EncodeBody, EncodeResponseDto, EncodeVectorBody, ForgetBody, ForgetResponseDto,
     MaterializeProceduralBody, MaterializeProceduralResponseDto, MemoryInspectDto,
@@ -25,7 +26,7 @@ use crate::state::EdgeState;
 pub async fn encode(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<EncodeBody>,
+    ApiJson(body): ApiJson<EncodeBody>,
 ) -> Result<Json<EncodeResponseDto>, ApiError> {
     if body.text.trim().is_empty() {
         return Err(ApiError::bad_request("text must not be blank"));
@@ -58,7 +59,7 @@ pub async fn encode(
 pub async fn recall(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<RecallBody>,
+    ApiJson(body): ApiJson<RecallBody>,
 ) -> Result<Json<RecallResponseDto>, ApiError> {
     if body.query.trim().is_empty() {
         return Err(ApiError::bad_request("query must not be blank"));
@@ -67,9 +68,12 @@ pub async fn recall(
     state.admit("recall", &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
+    // `include_graph` is the caller's to set. `include_edges` stays off: the
+    // memory-graph edges are a separate object with their own route, the read
+    // side of `POST /v1/links`.
     let mut builder = RecallBuilder::new(body.query)
         .include_edges(false)
-        .include_graph(false)
+        .include_graph(body.include_graph.unwrap_or(false))
         .include_text(true);
     if let Some(max) = body.max_results {
         builder = builder.max_results(max);
@@ -144,7 +148,7 @@ pub async fn recall(
 pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<MemoryListQuery>,
+    ApiQuery(query): ApiQuery<MemoryListQuery>,
 ) -> Result<Json<MemoryListPageDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -194,7 +198,7 @@ pub async fn inspect(
 pub async fn forget(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<ForgetBody>,
+    ApiJson(body): ApiJson<ForgetBody>,
 ) -> Result<Json<ForgetResponseDto>, ApiError> {
     let id = body.parse_id().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -222,7 +226,7 @@ pub async fn forget(
 pub async fn encode_vector(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<EncodeVectorBody>,
+    ApiJson(body): ApiJson<EncodeVectorBody>,
 ) -> Result<Json<EncodeResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;

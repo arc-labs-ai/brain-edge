@@ -3,11 +3,12 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::Json;
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::app::names::entity_names;
 use crate::dto::statement::{
     CreateStatementBody, CreateStatementResponseDto, GetStatementQuery, ListStatementsQuery,
@@ -25,7 +26,7 @@ pub async fn get(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<GetStatementQuery>,
+    ApiQuery(query): ApiQuery<GetStatementQuery>,
 ) -> Result<Json<StatementDetailDto>, ApiError> {
     let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -56,7 +57,7 @@ pub async fn get(
 pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<ListStatementsQuery>,
+    ApiQuery(query): ApiQuery<ListStatementsQuery>,
 ) -> Result<Json<ListStatementsResponseDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -99,7 +100,7 @@ pub async fn list(
 pub async fn create(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<CreateStatementBody>,
+    ApiJson(body): ApiJson<CreateStatementBody>,
 ) -> Result<(StatusCode, Json<CreateStatementResponseDto>), ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -128,7 +129,7 @@ pub async fn supersede(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<SupersedeStatementBody>,
+    ApiJson(body): ApiJson<SupersedeStatementBody>,
 ) -> Result<(StatusCode, Json<SupersedeStatementResponseDto>), ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -160,7 +161,7 @@ pub async fn tombstone(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<StatementRetireQuery>,
+    ApiQuery(query): ApiQuery<StatementRetireQuery>,
 ) -> Result<Json<TombstoneStatementResponseDto>, ApiError> {
     let mut req = query.to_tombstone(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -191,7 +192,7 @@ pub async fn retract(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<StatementRetireQuery>,
+    ApiQuery(query): ApiQuery<StatementRetireQuery>,
 ) -> Result<Json<RetractStatementResponseDto>, ApiError> {
     let mut req = query.to_retract(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
@@ -217,7 +218,7 @@ pub async fn history(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Query(query): Query<StatementHistoryQuery>,
+    ApiQuery(query): ApiQuery<StatementHistoryQuery>,
 ) -> Result<Json<StatementHistoryResponseDto>, ApiError> {
     let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;

@@ -1,6 +1,6 @@
 [package]
 name = "brain-edge"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "The HTTP/JSON edge for the Brain memory database — a self-hostable binary and an embeddable library that speaks the same API the Arc cloud hosts."
@@ -89,7 +89,17 @@ arc-swap = "1"
 # edit — a required field added inside a caret range is a source break that
 # the requirement cannot warn about. Stating the floor is what makes the
 # dependency honest about which versions actually work.
-brain-db-sdk = "0.4.4"
+# Pinned to a revision of the SDK repository rather than a crates.io
+# release. The edge tracks the SDK closely enough that a wire change
+# lands in both within a day, and waiting for a publish between the two
+# halves of one change meant CI could not build the edge at all. A rev
+# is as reproducible as a version — Cargo.lock records the exact commit
+# — and needs nothing published to resolve.
+#
+# This crate cannot be `cargo publish`ed while the dependency is a git
+# rev. Switch it back to a released version when the edge itself goes
+# to crates.io.
+brain-db-sdk = { git = "https://github.com/arc-labs-ai/brain-sdk.git", rev = "40565c0" }
 
 # ---------------------------------------------------------------------------
 # Lints.

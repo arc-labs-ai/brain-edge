@@ -18,6 +18,10 @@ use brain_db_sdk::wire::types::{
     MemoryListTimeAxisWire, MemoryResult, RecallResponseFrame as RecallResponseFrameWire,
     WireMemoryId,
 };
+use brain_db_sdk::wire::types::{
+    EnrichedEntity as WireEnrichedEntity, EnrichedRelation as WireEnrichedRelation,
+    EnrichedStatement as WireEnrichedStatement, GraphEnrichment as WireGraphEnrichment,
+};
 use serde::{Deserialize, Serialize};
 
 use super::{hex_decode, hex_encode, parse_memory_id, uuid_string};
@@ -118,6 +122,15 @@ pub struct RecallBody {
     /// Fine for debugging one bad answer; not something to leave on.
     #[serde(default)]
     pub include_trace: Option<bool>,
+    /// Ask for each hit's typed-graph enrichment: the entities, statements
+    /// and relations the extractor attached to that memory — what a recalled
+    /// memory is connected to.
+    ///
+    /// Off by default and free when off; the engine walks the graph only when
+    /// the request asks. Costs a handful of point reads per hit, capped by the
+    /// engine at 16 entities, 5 statements and 5 relations per memory.
+    #[serde(default)]
+    pub include_graph: Option<bool>,
 }
 
 /// One recalled memory in the response.
@@ -130,6 +143,11 @@ pub struct MemoryHit {
     pub salience: f32,
     pub kind: u8,
     pub created_at_unix_nanos: u64,
+    /// What this memory is connected to, when the request set
+    /// `include_graph`. Omitted entirely otherwise, so a caller that did not
+    /// ask sees exactly the response it always saw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph: Option<RecallGraphDto>,
 }
 
 impl From<MemoryResult> for MemoryHit {
@@ -142,6 +160,109 @@ impl From<MemoryResult> for MemoryHit {
             salience: m.salience,
             kind: m.kind as u8,
             created_at_unix_nanos: m.created_at_unix_nanos,
+            graph: m.graph.map(RecallGraphDto::from),
+        }
+    }
+}
+
+/// One hit's typed-graph enrichment.
+///
+/// Flat lists rather than the node/edge shape `artifact.graph` uses on
+/// `/v1/memories/{id}/inspect`. The two are different objects: that one is
+/// what the extractor built at write time, this is what the recalled memory
+/// is connected to now — a wider set, including typed relations incident to
+/// entities the memory merely mentions.
+#[derive(Debug, Serialize)]
+pub struct RecallGraphDto {
+    pub entities: Vec<RecallEntityDto>,
+    pub statements: Vec<RecallStatementDto>,
+    pub relations: Vec<RecallRelationDto>,
+}
+
+impl From<WireGraphEnrichment> for RecallGraphDto {
+    fn from(g: WireGraphEnrichment) -> Self {
+        Self {
+            entities: g.entities.into_iter().map(RecallEntityDto::from).collect(),
+            statements: g
+                .statements
+                .into_iter()
+                .map(RecallStatementDto::from)
+                .collect(),
+            relations: g
+                .relations
+                .into_iter()
+                .map(RecallRelationDto::from)
+                .collect(),
+        }
+    }
+}
+
+/// A resolved entity the memory mentions.
+#[derive(Debug, Serialize)]
+pub struct RecallEntityDto {
+    /// Lowercase hex, like every other 16-byte id this API returns.
+    pub id: String,
+    pub name: String,
+    /// `"<namespace>:<Name>"` — `brain:Person` for a built-in, the tenant's
+    /// own namespace for a type it declared.
+    pub type_qname: String,
+}
+
+impl From<WireEnrichedEntity> for RecallEntityDto {
+    fn from(e: WireEnrichedEntity) -> Self {
+        Self {
+            id: hex_encode(&e.id),
+            name: e.name,
+            type_qname: e.type_qname,
+        }
+    }
+}
+
+/// A typed claim this memory is evidence for.
+#[derive(Debug, Serialize)]
+pub struct RecallStatementDto {
+    pub id: String,
+    pub subject_name: String,
+    pub predicate: String,
+    pub object_label: String,
+    /// The object's entity id when the object is an entity; absent for a
+    /// literal. `object_label` stringifies both, so a consumer guessing by
+    /// name is wrong whenever a literal's text equals an entity's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_entity_id: Option<String>,
+    pub confidence: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_at_unix_nanos: Option<u64>,
+}
+
+impl From<WireEnrichedStatement> for RecallStatementDto {
+    fn from(s: WireEnrichedStatement) -> Self {
+        Self {
+            id: hex_encode(&s.id),
+            subject_name: s.subject_name,
+            predicate: s.predicate,
+            object_label: s.object_label,
+            object_entity_id: s.object_entity_id.as_ref().map(|b| hex_encode(b)),
+            confidence: s.confidence,
+            event_at_unix_nanos: s.event_at_unix_nanos,
+        }
+    }
+}
+
+/// A typed edge between two entities around this memory.
+#[derive(Debug, Serialize)]
+pub struct RecallRelationDto {
+    pub from_name: String,
+    pub predicate: String,
+    pub to_name: String,
+}
+
+impl From<WireEnrichedRelation> for RecallRelationDto {
+    fn from(r: WireEnrichedRelation) -> Self {
+        Self {
+            from_name: r.from_name,
+            predicate: r.predicate,
+            to_name: r.to_name,
         }
     }
 }
@@ -294,10 +415,7 @@ pub struct MemoryListQuery {
 impl MemoryListQuery {
     /// Build the wire request. Fails on a malformed cursor or `dir`.
     pub fn to_request(&self) -> Result<MemoryListRequest, String> {
-        let limit = self
-            .limit
-            .unwrap_or(LIST_DEFAULT_LIMIT)
-            .clamp(1, LIST_MAX_LIMIT);
+        let limit = super::bounded("limit", self.limit, LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT)?;
         let dir = match self.dir.as_deref().map(str::trim) {
             None | Some("" | "desc") => MemoryListDirWire::Desc,
             Some("asc") => MemoryListDirWire::Asc,
@@ -654,10 +772,22 @@ mod memory_tests {
     }
 
     #[test]
-    fn list_query_clamps_limit_defaults_dir_and_rejects_bad_dir() {
-        // Over-max clamps; asc/desc parse; malformed dir is an error.
+    fn list_query_refuses_a_bad_limit_or_dir_and_defaults_the_rest() {
+        // An out-of-range limit is refused, not adjusted — the same answer
+        // Brain gives, and consistent with `dir`, which was always rejected.
+        for bad in [0, LIST_MAX_LIMIT + 1, 9999] {
+            let err = MemoryListQuery {
+                limit: Some(bad),
+                cursor: None,
+                dir: None,
+                include_tombstoned: None,
+            }
+            .to_request()
+            .expect_err("an out-of-range limit must be refused");
+            assert!(err.contains("limit"), "limit {bad} gave {err}");
+        }
         let over = MemoryListQuery {
-            limit: Some(9999),
+            limit: Some(LIST_MAX_LIMIT),
             cursor: None,
             dir: None,
             include_tombstoned: None,
@@ -832,6 +962,91 @@ mod memory_tests {
             is_final: true,
         }]);
         assert!(done.next_cursor.is_none());
+    }
+
+    /// A caller that does not set `include_graph` sees no `graph` key at all,
+    /// not `null` — `skip_serializing_if` keeps the response unchanged for
+    /// them.
+    #[test]
+    fn a_hit_without_enrichment_gains_no_key() {
+        let hit = MemoryHit {
+            memory_id: "7".to_string(),
+            text: "t".to_string(),
+            similarity_score: 0.5,
+            confidence: 0.5,
+            salience: 0.5,
+            kind: 0,
+            created_at_unix_nanos: 1,
+            graph: None,
+        };
+        let json = serde_json::to_value(&hit).expect("serialize");
+        assert!(
+            json.get("graph").is_none(),
+            "an unasked-for graph must be absent, not null: {json}"
+        );
+    }
+
+    /// Ids are hex-encoded, like every other 16-byte id this API returns; a
+    /// raw byte array arrives as a JSON number list no caller can use as a
+    /// handle.
+    #[test]
+    fn enrichment_maps_across_and_hex_encodes_its_ids() {
+        let g = WireGraphEnrichment {
+            entities: vec![WireEnrichedEntity {
+                id: [0x11; 16],
+                name: "Lina".to_string(),
+                type_qname: "brain:Person".to_string(),
+            }],
+            statements: vec![WireEnrichedStatement {
+                id: [0x22; 16],
+                subject_name: "Lina".to_string(),
+                predicate: "acme:owns".to_string(),
+                object_label: "the cart".to_string(),
+                object_entity_id: Some([0x33; 16]),
+                confidence: 0.82,
+                event_at_unix_nanos: Some(99),
+            }],
+            relations: vec![WireEnrichedRelation {
+                from_name: "Lina".to_string(),
+                predicate: "brain:reports_to".to_string(),
+                to_name: "Mira".to_string(),
+            }],
+        };
+        let dto = RecallGraphDto::from(g);
+
+        assert_eq!(dto.entities[0].id, "11".repeat(16));
+        assert_eq!(dto.entities[0].type_qname, "brain:Person");
+        assert_eq!(dto.statements[0].id, "22".repeat(16));
+        // Entity-ness comes from the id, not the label: a literal whose text
+        // equals an entity's name breaks a label-based guess.
+        assert_eq!(
+            dto.statements[0].object_entity_id.as_deref(),
+            Some("33".repeat(16).as_str())
+        );
+        assert_eq!(dto.relations[0].to_name, "Mira");
+    }
+
+    /// A literal object carries no entity id, and the key is absent rather
+    /// than null so `"object_entity_id" in s` is a usable test.
+    #[test]
+    fn a_literal_object_carries_no_entity_id() {
+        let g = WireGraphEnrichment {
+            entities: Vec::new(),
+            statements: vec![WireEnrichedStatement {
+                id: [0x44; 16],
+                subject_name: "Lina".to_string(),
+                predicate: "acme:status".to_string(),
+                object_label: "Lina".to_string(),
+                object_entity_id: None,
+                confidence: 0.4,
+                event_at_unix_nanos: None,
+            }],
+            relations: Vec::new(),
+        };
+        let dto = RecallGraphDto::from(g);
+        let json = serde_json::to_value(&dto.statements[0]).expect("serialize");
+        assert!(json.get("object_entity_id").is_none(), "{json}");
+        assert!(json.get("event_at_unix_nanos").is_none(), "{json}");
     }
 
     #[test]

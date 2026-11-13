@@ -1,1 +1,8 @@
 target/
+
+# Local cross-repo linking. `.cargo/config.toml` patches brain-db-sdk to the
+# sibling checkout so a change there can be built and tested here without a
+# release. It is a working-tree convenience and must never be committed: CI
+# and Docker have no sibling checkout, and a build that silently compiled
+# against uncommitted source would not be the build consumers get.
+.cargo/

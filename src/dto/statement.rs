@@ -345,10 +345,7 @@ impl ListStatementsQuery {
             Some(k) if !k.trim().is_empty() => kind_list_filter_byte(k)?,
             _ => 0,
         };
-        let limit = self
-            .limit
-            .unwrap_or(DEFAULT_LIST_LIMIT)
-            .clamp(1, MAX_LIST_LIMIT);
+        let limit = super::bounded("limit", self.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?;
         Ok(StatementListRequest {
             subject,
             predicate: self.predicate.clone(),
@@ -469,7 +466,7 @@ mod statement_tests {
             min_confidence: 0.5,
             only_current: false,
             include_tombstoned: true,
-            limit: Some(9999),
+            limit: Some(MAX_LIST_LIMIT),
             cursor: Some("2a00ff".into()),
         };
         let req = with.to_request().unwrap();
@@ -479,6 +476,23 @@ mod statement_tests {
         assert!(!req.only_current);
         assert!(req.include_tombstoned);
         assert_eq!(req.cursor, vec![0x2a, 0x00, 0xff]); // hex-decoded
+
+        // An out-of-range limit is refused, matching Brain's own 1..=1000.
+        for bad in [0, MAX_LIST_LIMIT + 1] {
+            let err = ListStatementsQuery {
+                subject: None,
+                predicate: String::new(),
+                kind: None,
+                min_confidence: 0.0,
+                only_current: true,
+                include_tombstoned: false,
+                limit: Some(bad),
+                cursor: None,
+            }
+            .to_request()
+            .expect_err("an out-of-range limit must be refused");
+            assert!(err.contains("limit"), "limit {bad} gave {err}");
+        }
 
         // A malformed cursor is rejected rather than silently restarting the
         // enumeration from the top.
@@ -731,14 +745,36 @@ impl SupersedeStatementBody {
 }
 
 /// `DELETE /v1/statements/{id}` and `POST /v1/statements/{id}/retract` query.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct StatementRetireQuery {
-    /// A reason code kept on the record (`0` = unspecified).
-    #[serde(default)]
+    /// Why the row was retired, from Brain's closed audit set:
+    /// `1=SourceMemoryForgotten / 2=UserRequest / 3=SchemaInvalidation /
+    /// 4=ExtractorRetraction`.
+    ///
+    /// Defaults to `UserRequest` rather than to `0`. Zero is not a member of
+    /// the set — Brain refuses it — so the old default made an omitted
+    /// `reason` fail the request outright, and a caller retiring a row by
+    /// hand is exactly what `UserRequest` describes.
+    #[serde(default = "user_request_reason")]
     pub reason: u8,
     /// A human note kept alongside it.
     #[serde(default)]
     pub message: Option<String>,
+}
+
+/// `TombstoneReason::UserRequest`, the audit code for a retirement a caller
+/// asked for.
+fn user_request_reason() -> u8 {
+    2
+}
+
+impl Default for StatementRetireQuery {
+    fn default() -> Self {
+        Self {
+            reason: user_request_reason(),
+            message: None,
+        }
+    }
 }
 
 impl StatementRetireQuery {
@@ -877,10 +913,7 @@ impl StatementHistoryQuery {
         Ok(StatementHistoryRequest {
             anchor_id: parse_uuid(id)?,
             include_tombstoned: self.include_tombstoned,
-            limit: self
-                .limit
-                .filter(|n| *n > 0)
-                .map_or(DEFAULT_LIST_LIMIT, |n| n.min(MAX_LIST_LIMIT)),
+            limit: super::bounded("limit", self.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?,
             cursor: match self.cursor.as_deref() {
                 Some(c) => hex_decode(c)?,
                 None => Vec::new(),
@@ -910,8 +943,7 @@ impl StatementHistoryResponseDto {
     pub fn from_frames(frames: Vec<StatementHistoryResponseFrame>) -> Self {
         let chain_root = frames
             .first()
-            .map(|f| uuid_string(&f.chain_root))
-            .unwrap_or_default();
+            .map_or_default(|f| uuid_string(&f.chain_root));
         let total_versions = frames.first().map_or(0, |f| f.total_versions);
         // The cursor that matters is the LAST frame's: earlier frames carry
         // intermediate positions, and resuming from one of those would replay

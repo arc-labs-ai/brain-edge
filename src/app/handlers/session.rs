@@ -5,10 +5,11 @@
 
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Json;
 
+use crate::app::extract::{ApiJson, ApiQuery};
 use crate::dto::session::{
     CreateSessionBody, DeleteSessionQuery, ListSessionsQuery, ListSessionsResponseDto,
     SessionErasedDto, SessionProvisionDto, delete_session_request,
@@ -23,7 +24,7 @@ use crate::state::EdgeState;
 pub async fn create(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Json(body): Json<CreateSessionBody>,
+    ApiJson(body): ApiJson<CreateSessionBody>,
 ) -> Result<(StatusCode, Json<SessionProvisionDto>), ApiError> {
     let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
@@ -52,7 +53,7 @@ pub async fn create(
 pub async fn list(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    Query(query): Query<ListSessionsQuery>,
+    ApiQuery(query): ApiQuery<ListSessionsQuery>,
 ) -> Result<Json<ListSessionsResponseDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
@@ -80,7 +81,7 @@ pub async fn delete(
     State(state): State<EdgeState>,
     headers: HeaderMap,
     Path(id): Path<u64>,
-    Query(query): Query<DeleteSessionQuery>,
+    ApiQuery(query): ApiQuery<DeleteSessionQuery>,
 ) -> Result<Json<SessionErasedDto>, ApiError> {
     let mut req = delete_session_request(id, &query);
     let ident = state.resolve(&headers).await?;

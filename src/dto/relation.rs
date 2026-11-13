@@ -201,10 +201,8 @@ impl ListRelationsQuery {
         parse_side(&self.direction)
     }
 
-    fn limit(&self) -> u32 {
-        self.limit
-            .unwrap_or(DEFAULT_LIST_LIMIT)
-            .clamp(1, MAX_LIST_LIMIT)
+    fn limit(&self) -> Result<u32, String> {
+        super::bounded("limit", self.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)
     }
 
     /// The decoded cursor bytes; an absent or empty cursor starts at the top.
@@ -227,7 +225,7 @@ impl ListRelationsQuery {
             time_range_end_unix_nanos: 0,
             include_superseded: self.include_superseded,
             include_tombstoned: self.include_tombstoned,
-            limit: self.limit(),
+            limit: self.limit()?,
             cursor: self.cursor()?,
             act_as: None,
         })
@@ -245,7 +243,7 @@ impl ListRelationsQuery {
             time_range_end_unix_nanos: 0,
             include_superseded: self.include_superseded,
             include_tombstoned: self.include_tombstoned,
-            limit: self.limit(),
+            limit: self.limit()?,
             cursor: self.cursor()?,
             act_as: None,
         })
@@ -418,13 +416,21 @@ mod relation_tests {
             relation_type: "brain:knows".into(),
             include_superseded: true,
             include_tombstoned: false,
-            limit: Some(9999),
+            limit: Some(MAX_LIST_LIMIT),
             cursor: Some("2a00ff".into()),
         };
         let from = q.to_from_request(id).unwrap();
         assert_eq!(from.from_entity[15], 5);
         assert_eq!(from.relation_type_filter, "brain:knows");
         assert_eq!(from.limit, MAX_LIST_LIMIT);
+
+        // An out-of-range limit is refused on both verbs rather than clamped.
+        let over = ListRelationsQuery {
+            limit: Some(MAX_LIST_LIMIT + 1),
+            ..Default::default()
+        };
+        assert!(over.to_from_request(id).is_err());
+        assert!(over.to_to_request(id).is_err());
         assert!(from.include_superseded);
         assert_eq!(from.cursor, vec![0x2a, 0x00, 0xff]);
 
@@ -604,11 +610,36 @@ impl SupersedeRelationBody {
 }
 
 /// `DELETE /v1/relations/{id}` query.
-#[derive(Debug, Default, Deserialize)]
+///
+/// Mirrors [`StatementRetireQuery`](super::statement::StatementRetireQuery):
+/// a retired relation and a retired statement are classified by the same
+/// closed audit set, so one trail reads the same way for both.
+#[derive(Debug, Deserialize)]
 pub struct TombstoneRelationQuery {
-    /// Why it is being retired. Kept on the record.
+    /// Why it is being retired, from Brain's closed audit set:
+    /// `1=SourceMemoryForgotten / 2=UserRequest / 3=SchemaInvalidation /
+    /// 4=ExtractorRetraction`. Defaults to `UserRequest`, which is what a
+    /// caller retiring an edge by hand is doing.
+    #[serde(default = "user_request_reason")]
+    pub reason: u8,
+    /// A human note kept alongside it.
     #[serde(default)]
-    pub reason: Option<String>,
+    pub message: Option<String>,
+}
+
+/// `TombstoneReason::UserRequest`, the audit code for a retirement a caller
+/// asked for.
+fn user_request_reason() -> u8 {
+    2
+}
+
+impl Default for TombstoneRelationQuery {
+    fn default() -> Self {
+        Self {
+            reason: user_request_reason(),
+            message: None,
+        }
+    }
 }
 
 impl TombstoneRelationQuery {
@@ -619,7 +650,8 @@ impl TombstoneRelationQuery {
     pub fn to_request(&self, id: &str) -> Result<RelationTombstoneRequest, String> {
         Ok(RelationTombstoneRequest {
             relation_id: parse_uuid(id)?,
-            reason: self.reason.clone().unwrap_or_default(),
+            reason: self.reason,
+            reason_message: self.message.clone().unwrap_or_default(),
             request_id: brain_db_sdk::new_id(),
             act_as: None,
         })
@@ -807,15 +839,23 @@ mod relation_authoring_tests {
     }
 
     #[test]
-    fn tombstone_carries_an_optional_reason() {
+    fn tombstone_defaults_to_a_reason_brain_accepts() {
+        // The old default was `0`, which is not a member of Brain's audit set:
+        // omitting `reason` made the request fail outright.
         let bare = TombstoneRelationQuery::default().to_request(RID).unwrap();
-        assert_eq!(bare.reason, "");
+        assert_eq!((bare.reason, bare.reason_message.as_str()), (2, ""));
+
         let given = TombstoneRelationQuery {
-            reason: Some("superseded by hand".into()),
+            reason: 3,
+            message: Some("superseded by hand".into()),
         }
         .to_request(RID)
         .unwrap();
-        assert_eq!(given.reason, "superseded by hand");
+        assert_eq!(
+            (given.reason, given.reason_message.as_str()),
+            (3, "superseded by hand")
+        );
+
         assert!(
             TombstoneRelationQuery::default()
                 .to_request("nope")

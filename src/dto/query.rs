@@ -19,7 +19,7 @@
 
 use brain_db_sdk::wire::types::{
     FusionConfigWire, QueryExplainRequest, QueryExplainResponse, QueryRequest, QueryTraceRequest,
-    QueryTraceResponse, RetrieverSelectionWire, RetrieverWire, TimeRangeWire,
+    QueryTraceResponse, RetrieverSelectionWire, RetrieverWire, StatementKindWire, TimeRangeWire,
 };
 use serde::{Deserialize, Serialize};
 
@@ -109,17 +109,34 @@ pub struct QueryBody {
     pub fusion: Option<FusionConfigDto>,
 }
 
-/// The 1-based storage byte for a statement kind name.
+/// The storage byte for a statement kind name, as the SDK defines it.
+///
+/// OFF BY ONE UNTIL NOW, and silently: this held its own table reading
+/// `fact => 1, preference => 2, …`, which is the LIST route's filter byte —
+/// a different encoding, where `0` means "no filter" and every kind is
+/// therefore shifted up by one. `QueryRequest.kind_filter` is a LIST, so an
+/// empty vec already means "no filter" and the bytes in it are plain storage
+/// bytes: `Fact = 0`.
+///
+/// The cost was a query that filtered for the wrong kind and said nothing
+/// about it. Asking for `fact` planned `kind in [Preference]`; asking for
+/// `directive` sent byte 6, which is not a kind at all. Confirmed against the
+/// live engine, whose own plan text printed the kind it had actually been
+/// given.
+///
+/// Derived from `StatementKindWire` rather than written out again, so the two
+/// cannot drift apart a second time.
 fn kind_byte(raw: &str) -> Result<u8, String> {
-    Ok(match raw.trim().to_ascii_lowercase().as_str() {
-        "fact" => 1,
-        "preference" => 2,
-        "event" => 3,
-        "attribute" => 4,
-        "relation" => 5,
-        "directive" => 6,
+    let kind = match raw.trim().to_ascii_lowercase().as_str() {
+        "fact" => StatementKindWire::Fact,
+        "preference" => StatementKindWire::Preference,
+        "event" => StatementKindWire::Event,
+        "attribute" => StatementKindWire::Attribute,
+        "relation" => StatementKindWire::Relation,
+        "directive" => StatementKindWire::Directive,
         other => return Err(format!("`{other}` is not a statement kind")),
-    })
+    };
+    Ok(kind.to_storage_byte())
 }
 
 fn retriever(raw: &str) -> Result<RetrieverWire, String> {
@@ -324,15 +341,48 @@ mod query_tests {
         assert_eq!(req.as_of_record_time_unix_nanos, Some(3));
     }
 
+    /// The storage byte, not the LIST route's filter byte.
+    ///
+    /// This test asserted `vec![1, 6]` and so enshrined an off-by-one: those
+    /// are the filter bytes for a route where `0` means "no filter", and
+    /// `kind_filter` is a list where an empty vec already means that. Every
+    /// kind was shifted up one, so a query for facts filtered preferences and
+    /// a query for directives sent a byte that is no kind at all.
     #[test]
-    fn kinds_map_to_the_one_based_storage_byte() {
+    fn kinds_map_to_the_storage_byte_the_sdk_defines() {
         let req = QueryBody {
             kinds: vec!["fact".into(), "directive".into()],
             ..body("x")
         }
         .to_request()
         .unwrap();
-        assert_eq!(req.kind_filter, vec![1, 6]);
+        assert_eq!(req.kind_filter, vec![0, 5]);
+    }
+
+    /// Every name round-trips to the byte its own `StatementKindWire` reports,
+    /// so the table above cannot drift from the SDK again.
+    #[test]
+    fn every_kind_name_matches_its_wire_kind() {
+        for (name, kind) in [
+            ("fact", StatementKindWire::Fact),
+            ("preference", StatementKindWire::Preference),
+            ("event", StatementKindWire::Event),
+            ("attribute", StatementKindWire::Attribute),
+            ("relation", StatementKindWire::Relation),
+            ("directive", StatementKindWire::Directive),
+        ] {
+            let req = QueryBody {
+                kinds: vec![name.into()],
+                ..body("x")
+            }
+            .to_request()
+            .unwrap();
+            assert_eq!(
+                req.kind_filter,
+                vec![kind.to_storage_byte()],
+                "`{name}` must send the byte the SDK calls {kind:?}"
+            );
+        }
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod llm_credential;
 pub mod memory;
 pub mod query;
 pub mod reasoning;
+pub mod reasoning_trace;
 pub mod relation;
 pub mod schema;
 pub mod session;
@@ -20,6 +21,28 @@ pub mod statement;
 pub mod subscribe;
 
 use brain_db_sdk::wire::types::WireMemoryId;
+
+/// Resolve a caller-supplied numeric bound, or the default when it is omitted.
+///
+/// An omitted value is the caller declining to choose, so the default stands.
+/// A value the caller actually sent is validated, never adjusted: Brain rejects
+/// a bound outside its range, so quietly substituting a different one here
+/// would give HTTP callers a different contract from the protocol — a request
+/// for 101 rows would come back as a silently truncated page of 100 while the
+/// same request over the wire is an error, and a client paginating on the count
+/// it asked for would read that as the end of the data.
+pub(crate) fn bounded(
+    field: &str,
+    supplied: Option<u32>,
+    default: u32,
+    max: u32,
+) -> Result<u32, String> {
+    match supplied {
+        None => Ok(default),
+        Some(n) if (1..=max).contains(&n) => Ok(n),
+        Some(n) => Err(format!("{field} must be in 1..={max}, got {n}")),
+    }
+}
 
 /// Parse a decimal memory-id string to a 128-bit wire id.
 pub(crate) fn parse_memory_id(s: &str) -> Result<WireMemoryId, String> {
