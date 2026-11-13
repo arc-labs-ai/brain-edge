@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.2](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.1...v0.4.2) (2026-11-13)
+
+
+### Fixes
+
+* **schema:** send the declaration scope on POST /v1/schema ([f4ce9a1](https://github.com/arc-labs-ai/brain-edge/commit/f4ce9a1e5f624798db797c4f60a255ca2609ce00))
+
+
+### Features
+
+* **edge:** serve the entity type registry, and retire a relation by code ([9fa9804](https://github.com/arc-labs-ai/brain-edge/commit/9fa98043be2944ac52b5b05e22838cdadf839f2f))
+* **edge:** the schema declaration scope, the entity type registry, and brain-db-sdk 0.4.4 ([8d4eaf7](https://github.com/arc-labs-ai/brain-edge/commit/8d4eaf7dde8c65f33304f40d5a87d818343caaa7))
+
 ## [0.4.1](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.0...v0.4.1) (2026-11-03)
 
 
