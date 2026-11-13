@@ -943,7 +943,8 @@ impl StatementHistoryResponseDto {
     pub fn from_frames(frames: Vec<StatementHistoryResponseFrame>) -> Self {
         let chain_root = frames
             .first()
-            .map_or_default(|f| uuid_string(&f.chain_root));
+            .map(|f| uuid_string(&f.chain_root))
+            .unwrap_or_default();
         let total_versions = frames.first().map_or(0, |f| f.total_versions);
         // The cursor that matters is the LAST frame's: earlier frames carry
         // intermediate positions, and resuming from one of those would replay
