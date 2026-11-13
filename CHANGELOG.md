@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.3](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.2...v0.4.3) (2026-11-13)
+
+
+### Fixes
+
+* **release:** require the release token rather than falling back silently ([#27](https://github.com/arc-labs-ai/brain-edge/issues/27)) ([563ece6](https://github.com/arc-labs-ai/brain-edge/commit/563ece61b817afc4b9e217c683608b1a17316c4c))
+
+
+### Refactoring
+
+* **byok:** forward provider credentials to Brain instead of sealing them ([#28](https://github.com/arc-labs-ai/brain-edge/issues/28)) ([b74766f](https://github.com/arc-labs-ai/brain-edge/commit/b74766fd4939065ec7981a7046412ffaba50ecb4))
+
 ## [0.4.2](https://github.com/arc-labs-ai/brain-edge/compare/v0.4.1...v0.4.2) (2026-11-13)
 
 

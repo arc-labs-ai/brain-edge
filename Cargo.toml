@@ -1,6 +1,6 @@
 [package]
 name = "brain-edge"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 # The oldest toolchain this crate builds on. Stated, not assumed: without it
 # Cargo makes no promise, and a consumer pinned to an older rustc resolves the
