@@ -9,8 +9,9 @@
 //!
 //! The cache is held in an [`ArcSwap`] so the hot path (pool already built) is a
 //! lock-free load + map lookup with a relaxed-atomic recency bump — no mutex, no
-//! `.await` under a lock. The cold path builds the pool OUTSIDE any critical
-//! section and publishes it via copy-on-write [`ArcSwap::rcu`].
+//! `.await` under a lock. The cold path performs a lock-free lookup, publishes a
+//! cheap empty entry via copy-on-write [`ArcSwap::rcu`], and uses a per-credential
+//! latch to collapse a cold-start burst to one handshake set.
 //!
 //! It is bounded two ways so a long-lived process serving many credentials
 //! doesn't accumulate one `Arc<Pool>` (and `pool_size` live TCP connections) per
@@ -39,19 +40,31 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use brain_db_sdk::{Auth, BrainClient, BrainError, Pool};
+use brain_db_sdk::transport::{read_frame, write_frame};
+use brain_db_sdk::wire::cbor::{from_cbor_bytes, to_cbor_bytes};
+use brain_db_sdk::wire::frame::{FLAG_EOS, Frame};
+use brain_db_sdk::wire::opcode::Opcode;
+use brain_db_sdk::wire::types::{ByeRequest, HelloCapabilities, HelloPayload, WelcomePayload};
+use brain_db_sdk::{Auth, BrainClient, BrainError, ClientConfig, Pool};
 use tokio::sync::OnceCell;
 use tracing::{info, warn};
+
+use crate::metrics::{self, AcquireOutcome, EngineCallKind, EngineCallOutcome, EvictionReason};
 
 /// Configuration for a [`BrainPool`].
 #[derive(Clone, Debug)]
 pub struct BrainPoolConfig {
     /// The Brain database listener address every pool connects to.
     pub brain_addr: SocketAddr,
+    /// TLS settings for every connection this pool opens to Brain. `None`
+    /// keeps plaintext TCP. It lives on the pool config because Brain
+    /// judges transport confidentiality per connection.
+    pub brain_tls: Option<brain_db_sdk::TlsConfig>,
     /// Sockets per credential (the [`brain_db_sdk::Pool`] width).
     pub pool_size: usize,
     /// Hard cap on distinct cached credentials; the least-recently-used entry is
@@ -65,14 +78,49 @@ pub struct BrainPoolConfig {
 /// without taking a lock on every hot-path hit — the atomic is bumped in place;
 /// only eviction (cold path) needs to read across entries.
 struct PoolEntry {
-    pool: Arc<Pool>,
+    pool: OnceCell<Arc<Pool>>,
     last_used_secs: AtomicU64,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+/// Monotonic origin for cache recency. An NTP step backwards on a wall clock
+/// stalls the idle sweeper until real time catches up; a step forwards can make
+/// one sweep drop every live pool and trigger a reconnect storm against Brain.
+static PROCESS_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Return seconds since process start. Recency is only compared against this
+/// same monotonic counter, which starts at zero; `saturating_sub` is therefore
+/// the right floor when `sweep_idle` computes a cutoff early in process life.
+fn monotonic_secs() -> u64 {
+    PROCESS_EPOCH.elapsed().as_secs()
+}
+
+fn engine_outcome(ok: bool) -> EngineCallOutcome {
+    if ok {
+        EngineCallOutcome::Ok
+    } else {
+        EngineCallOutcome::Failed
+    }
+}
+
+fn record_engine(kind: EngineCallKind, outcome: EngineCallOutcome, elapsed: Duration) {
+    let family = &metrics::global().engine;
+    family.call(kind.idx(), outcome.idx()).inc();
+    family.duration(kind.idx()).observe(elapsed.as_secs_f64());
+}
+
+fn record_acquisition(outcome: AcquireOutcome, elapsed: Duration) {
+    let family = &metrics::global().pool;
+    family.acquisition(outcome.idx()).inc();
+    family.acquire_duration().observe(elapsed.as_secs_f64());
+}
+
+fn publish_cache_size(size: usize) {
+    // Credential labels would be unbounded and would disclose tenant identity; the cache gauge
+    // is intentionally process-wide because exposition has no pool handle or key context.
+    metrics::global()
+        .pool
+        .cache_size()
+        .set(u64::try_from(size).unwrap_or(u64::MAX));
 }
 
 /// The key of the least-recently-used entry to evict, or `None` if the cache is
@@ -106,8 +154,9 @@ fn stale_keys<'a>(recencies: impl Iterator<Item = (&'a str, u64)>, cutoff: u64) 
 /// fields. Both are honored by [`BrainPool::client_for`], [`BrainPool::sweep_idle`],
 /// and [`BrainPool::probe`].
 enum Mode {
-    /// Self-host bearer passthrough: one pool per distinct wire credential, held
-    /// in an [`ArcSwap`]-guarded LRU cache. Pools are built lazily on first use.
+    /// Self-host bearer passthrough: one lazily initialized pool per distinct
+    /// wire credential, held in an [`ArcSwap`]-guarded LRU cache. Each entry's
+    /// latch collapses concurrent first use to one pool initialization.
     PerCredential(ArcSwap<HashMap<String, Arc<PoolEntry>>>),
     /// Gateway shared / `act_as`: ONE pool authenticated as a trusted service
     /// principal (a `can_act_as` key). Every `client_for` returns a client from
@@ -124,11 +173,11 @@ enum Mode {
 /// A bounded connection-pool cache to Brain — per-credential (self-host) or a
 /// single shared service-principal pool with per-request `act_as` (gateway).
 ///
-/// In per-credential mode the cache is keyed by the wire credential string and
-/// held in an [`ArcSwap`] so the hot path (pool already built) is a lock-free
-/// load + map lookup with no per-request hashing beyond the lookup itself. In
-/// shared mode there is one pool for every caller. Pools are created lazily, on
-/// first use.
+/// In per-credential mode the cache is keyed by the wire credential string
+/// and held in an [`ArcSwap`] so the hot path is a lock-free load + lookup;
+/// an empty entry is inserted cheaply on a miss and its per-key latch makes
+/// concurrent first use share one pool initialization. In shared mode there
+/// is one pool for every caller. Pools are created lazily, on first use.
 pub struct BrainPool {
     config: BrainPoolConfig,
     mode: Mode,
@@ -191,9 +240,9 @@ impl BrainPool {
     ///
     /// In per-credential mode the client is authenticated as `credential`: hot
     /// path is a lock-free load + lookup, bumping recency in place with a relaxed
-    /// atomic; cold path builds the [`brain_db_sdk::Pool`] OUTSIDE any lock,
-    /// publishes it via [`ArcSwap::rcu`], and LRU-evicts the least-recently-used
-    /// entry first if the cache is at `max_credentials`.
+    /// atomic. On a miss, the cache publishes an empty entry without connecting;
+    /// that entry's latch then initializes the [`brain_db_sdk::Pool`] once for
+    /// the credential, while LRU-evicting an old entry first at the cap.
     ///
     /// In shared mode `credential` is **ignored**: the returned client always
     /// comes from the single service-principal pool. The gateway then sets
@@ -203,8 +252,11 @@ impl BrainPool {
     /// Returns the underlying [`BrainError`] if a fresh pool fails to connect or
     /// handshake.
     pub async fn client_for(&self, credential: &str) -> Result<Arc<BrainClient>, BrainError> {
+        let started = Instant::now();
         match &self.mode {
-            Mode::PerCredential(pools) => self.client_for_credential(pools, credential).await,
+            Mode::PerCredential(pools) => {
+                self.client_for_credential(pools, credential, started).await
+            }
             Mode::Shared {
                 service_credential,
                 pool,
@@ -212,83 +264,235 @@ impl BrainPool {
                 // Ignore `credential`: one shared pool serves every caller. The
                 // OnceCell serializes concurrent initializers, so at most one set
                 // of handshakes is ever opened even under a cold-start burst.
-                let shared = pool
+                let built = Arc::new(AtomicBool::new(false));
+                let built_for_init = Arc::clone(&built);
+                let initialized = pool.initialized();
+                let shared = match pool
                     .get_or_try_init(|| async {
+                        built_for_init.store(true, Ordering::Relaxed);
+                        let connect_started = Instant::now();
                         let auth = Auth::Token(service_credential.as_bytes().to_vec());
-                        Pool::connect(self.config.brain_addr, self.config.pool_size, auth)
-                            .await
-                            .map(Arc::new)
-                            .map_err(|e| {
-                                warn!(error = %e, "brain shared service pool connect failed");
-                                e
-                            })
+                        let mut client_config = ClientConfig::new(auth);
+                        // TLS travels with every pooled connection because Brain judges
+                        // confidentiality per connection; without it, credential registration
+                        // cannot carry a provider key.
+                        client_config.tls = self.config.brain_tls.clone();
+                        let result = Pool::connect_with(
+                            self.config.brain_addr,
+                            self.config.pool_size,
+                            &client_config,
+                        )
+                        .await
+                        .map(Arc::new)
+                        .map_err(|e| {
+                            warn!(error = %e, "brain shared service pool connect failed");
+                            e
+                        });
+                        record_engine(
+                            EngineCallKind::Connect,
+                            engine_outcome(result.is_ok()),
+                            connect_started.elapsed(),
+                        );
+                        result
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(shared) => shared,
+                    Err(error) => {
+                        record_acquisition(AcquireOutcome::Failed, started.elapsed());
+                        return Err(error);
+                    }
+                };
                 // Reconnects a member Brain closed (e.g. on restart) instead
                 // of handing out the dead socket forever.
-                shared.get_healthy().await
+                let was_closed = shared.get().is_closed();
+                let reconnect_started = Instant::now();
+                let result = shared.get_healthy().await;
+                if was_closed {
+                    record_engine(
+                        EngineCallKind::Reconnect,
+                        engine_outcome(result.is_ok()),
+                        reconnect_started.elapsed(),
+                    );
+                }
+                let outcome = if result.is_err() {
+                    AcquireOutcome::Failed
+                } else if built.load(Ordering::Relaxed) {
+                    AcquireOutcome::Built
+                } else {
+                    // Either the pool was already there, or another task's
+                    // initializer produced it while this one waited on the
+                    // latch. Both were served without opening a connection,
+                    // which is what `cached` means to an operator; the wait
+                    // itself is what `init_collapsed` counts.
+                    AcquireOutcome::Cached
+                };
+                if !initialized && !built.load(Ordering::Relaxed) {
+                    metrics::global().pool.init_collapsed().inc();
+                }
+                record_acquisition(outcome, started.elapsed());
+                result
             }
         }
     }
 
     /// Per-credential `client_for` (the self-host path). Split out so the shared
-    /// arm stays legible; the cache-load/RCU-insert logic is unchanged.
+    /// arm stays legible; the lock-free cache and per-key initialization latch
+    /// remain isolated from shared-pool handling.
     async fn client_for_credential(
         &self,
         pools: &ArcSwap<HashMap<String, Arc<PoolEntry>>>,
         credential: &str,
+        started: Instant,
     ) -> Result<Arc<BrainClient>, BrainError> {
         // Hot path: lock-free read. A built pool is the overwhelming common case.
-        let hit = pools.load().get(credential).map(Arc::clone);
-        if let Some(entry) = hit {
-            entry.last_used_secs.store(now_secs(), Ordering::Relaxed);
-            return entry.pool.get_healthy().await;
-        }
+        let entry = if let Some(entry) = pools.load().get(credential).map(Arc::clone) {
+            entry
+        } else {
+            let new_entry = Arc::new(PoolEntry {
+                pool: OnceCell::new(),
+                last_used_secs: AtomicU64::new(monotonic_secs()),
+            });
 
-        // Cold path: build outside any critical section so a slow handshake never
-        // blocks other credentials, and no lock is held across `.await`.
-        let auth = Auth::Token(credential.as_bytes().to_vec());
-        let built = Pool::connect(self.config.brain_addr, self.config.pool_size, auth)
-            .await
-            .map_err(|e| {
-                warn!(error = %e, "brain pool connect failed");
-                e
-            })?;
-        let entry = Arc::new(PoolEntry {
-            pool: Arc::new(built),
-            last_used_secs: AtomicU64::new(now_secs()),
-        });
-
-        // Publish via RCU (copy-on-write + compare-and-swap retry). If a
-        // concurrent task already inserted this key, leave the winner in place;
-        // our freshly built pool is then dropped at end of scope. Evict the LRU
-        // entry first if we're at the cap, so the map never grows past
-        // max_credentials.
-        pools.rcu(|current| {
-            if current.contains_key(credential) {
-                Arc::clone(current)
-            } else {
-                let mut next = HashMap::clone(current);
-                if let Some(lru_key) = lru_victim_key(
-                    next.iter()
-                        .map(|(k, e)| (k.as_str(), e.last_used_secs.load(Ordering::Relaxed))),
-                    next.len(),
-                    self.config.max_credentials,
-                ) {
-                    next.remove(&lru_key);
+            // Publish via RCU (copy-on-write + compare-and-swap retry). If a
+            // concurrent task already inserted this key, leave the winner in place;
+            // every racer then reloads and shares that winner's latch. Evict the
+            // LRU entry first if we're at the cap, so the map never grows past
+            // max_credentials.
+            let at_capacity = pools.load().len() >= self.config.max_credentials;
+            pools.rcu(|current| {
+                if current.contains_key(credential) {
+                    Arc::clone(current)
+                } else {
+                    let mut next = HashMap::clone(current);
+                    if let Some(lru_key) = lru_victim_key(
+                        next.iter()
+                            .map(|(k, e)| (k.as_str(), e.last_used_secs.load(Ordering::Relaxed))),
+                        next.len(),
+                        self.config.max_credentials,
+                    ) {
+                        next.remove(&lru_key);
+                    }
+                    next.insert(credential.to_string(), Arc::clone(&new_entry));
+                    Arc::new(next)
                 }
-                next.insert(credential.to_string(), Arc::clone(&entry));
+            });
+
+            // The RCU publishes either this entry or a concurrent winner; the
+            // reload takes ownership before the latch can be awaited.
+            let entry = pools
+                .load()
+                .get(credential)
+                .map(Arc::clone)
+                .expect("invariant: credential entry is present after rcu insert");
+            publish_cache_size(pools.load().len());
+            if at_capacity && Arc::ptr_eq(&entry, &new_entry) {
+                metrics::global()
+                    .pool
+                    .eviction(EvictionReason::Capacity.idx())
+                    .inc();
+            }
+            entry
+        };
+
+        let initialized = entry.pool.initialized();
+        let built = Arc::new(AtomicBool::new(false));
+        let built_for_init = Arc::clone(&built);
+        entry
+            .last_used_secs
+            .store(monotonic_secs(), Ordering::Relaxed);
+        let pool = entry
+            .pool
+            .get_or_try_init(|| async {
+                built_for_init.store(true, Ordering::Relaxed);
+                self.connect_credential(credential).await
+            })
+            .await;
+        let result = match pool {
+            Ok(pool) => {
+                let was_closed = pool.get().is_closed();
+                let reconnect_started = Instant::now();
+                let result = pool.get_healthy().await;
+                if was_closed {
+                    record_engine(
+                        EngineCallKind::Reconnect,
+                        engine_outcome(result.is_ok()),
+                        reconnect_started.elapsed(),
+                    );
+                }
+                result
+            }
+            Err(error) => {
+                Self::remove_entry(pools, credential, &entry);
+                Err(error)
+            }
+        };
+        let outcome = if result.is_err() {
+            AcquireOutcome::Failed
+        } else if built.load(Ordering::Relaxed) {
+            AcquireOutcome::Built
+        } else {
+            // Either the pool was already there, or another task's initializer
+            // produced it while this one waited on the latch. Both were served
+            // without opening a connection, which is what `cached` means to an
+            // operator; the wait itself is what `init_collapsed` counts.
+            AcquireOutcome::Cached
+        };
+        if !initialized && !built.load(Ordering::Relaxed) {
+            metrics::global().pool.init_collapsed().inc();
+        }
+        record_acquisition(outcome, started.elapsed());
+        result
+    }
+
+    /// Open a pool authenticated as one wire credential, keeping connection
+    /// failures tied to that credential's initialization latch.
+    async fn connect_credential(&self, credential: &str) -> Result<Arc<Pool>, BrainError> {
+        let started = Instant::now();
+        let auth = Auth::Token(credential.as_bytes().to_vec());
+        let mut client_config = ClientConfig::new(auth);
+        client_config.tls = self.config.brain_tls.clone();
+        let result = Pool::connect_with(
+            self.config.brain_addr,
+            self.config.pool_size,
+            &client_config,
+        )
+        .await
+        .map(Arc::new)
+        .map_err(|e| {
+            warn!(error = %e, "brain pool connect failed");
+            e
+        });
+        record_engine(
+            EngineCallKind::Connect,
+            engine_outcome(result.is_ok()),
+            started.elapsed(),
+        );
+        result
+    }
+
+    /// Remove a failed entry only while it is still the exact cached instance.
+    /// A failed initialization must not consume a cache slot and evict a
+    /// working credential; pointer identity also protects a racing replacement
+    /// from being removed under the same key.
+    fn remove_entry(
+        pools: &ArcSwap<HashMap<String, Arc<PoolEntry>>>,
+        credential: &str,
+        entry: &Arc<PoolEntry>,
+    ) {
+        pools.rcu(|current| {
+            if current
+                .get(credential)
+                .is_some_and(|current_entry| Arc::ptr_eq(current_entry, entry))
+            {
+                let mut next = HashMap::clone(current);
+                next.remove(credential);
                 Arc::new(next)
+            } else {
+                Arc::clone(current)
             }
         });
-
-        // After the RCU the key is guaranteed present (ours or the winner's).
-        let entry = pools
-            .load()
-            .get(credential)
-            .map(Arc::clone)
-            .expect("invariant: pool for credential is present after rcu insert");
-        entry.pool.get_healthy().await
+        publish_cache_size(pools.load().len());
     }
 
     /// Drop credentials idle beyond `config.idle_ttl`. Called by a background
@@ -299,7 +503,7 @@ impl BrainPool {
         let Mode::PerCredential(pools) = &self.mode else {
             return;
         };
-        let cutoff = now_secs().saturating_sub(self.config.idle_ttl.as_secs());
+        let cutoff = monotonic_secs().saturating_sub(self.config.idle_ttl.as_secs());
         let current = pools.load();
         let evicted = stale_keys(
             current
@@ -317,21 +521,88 @@ impl BrainPool {
             }
             Arc::new(next)
         });
+        publish_cache_size(pools.load().len());
+        metrics::global()
+            .pool
+            .eviction(EvictionReason::Idle.idx())
+            .add(u64::try_from(evicted.len()).unwrap_or(u64::MAX));
         info!(count = evicted.len(), "swept idle brain credential pools");
     }
 
-    /// Cheap reachability probe used by readiness: can we open a TCP socket to
-    /// the Brain listener within `timeout`? Avoids a full handshake or a
-    /// credential.
+    /// Probe whether Brain is serving within `timeout`.
+    ///
+    /// An initialized pool costs one multiplexed PING/PONG and zero new
+    /// sockets. A cold start costs one throwaway socket and two small frames
+    /// (HELLO and WELCOME), followed by a clean BYE.
     pub async fn probe(&self, timeout: Duration) -> bool {
-        matches!(
-            tokio::time::timeout(
-                timeout,
-                tokio::net::TcpStream::connect(self.config.brain_addr),
-            )
-            .await,
-            Ok(Ok(_))
-        )
+        let started = Instant::now();
+        let result = tokio::time::timeout(timeout, self.probe_inner()).await;
+        let outcome = match &result {
+            Ok(true) => EngineCallOutcome::Ok,
+            Ok(false) => EngineCallOutcome::Failed,
+            Err(_) => EngineCallOutcome::TimedOut,
+        };
+        record_engine(EngineCallKind::Probe, outcome, started.elapsed());
+        matches!(&result, Ok(true))
+    }
+
+    // The two tiers keep readiness from opening a socket once traffic has started, and neither
+    // tier removes a pooled connection from circulation because PING uses its control stream.
+    async fn probe_inner(&self) -> bool {
+        let cached_pool = match &self.mode {
+            Mode::PerCredential(pools) => {
+                // Clone out of the ArcSwap guard so its debt slot is free while
+                // the health check suspends on the network.
+                let entry = pools.load().values().next().map(Arc::clone);
+                entry.and_then(|entry| entry.pool.get().map(Arc::clone))
+            }
+            Mode::Shared { pool, .. } => {
+                // Clone out of the OnceCell before the shared-pool health check
+                // so the selected pool remains independent of cache storage.
+                pool.get().map(Arc::clone)
+            }
+        };
+        if let Some(pool) = cached_pool {
+            let client = pool.get();
+            if !client.is_closed() {
+                return client.ping(None).await.is_ok();
+            }
+        }
+
+        let Ok(mut stream) = tokio::net::TcpStream::connect(self.config.brain_addr).await else {
+            return false;
+        };
+        if stream.set_nodelay(true).is_err() {
+            return false;
+        }
+        let hello = HelloPayload {
+            client_id: "brain-db-sdk-rust".to_string(),
+            supported_versions: vec![1],
+            capabilities: HelloCapabilities {
+                streaming: true,
+                compression_zstd: false,
+                server_push: false,
+            },
+            client_connection_token: None,
+        };
+        let hello_frame = Frame::new(Opcode::Hello.as_u16(), FLAG_EOS, 0, to_cbor_bytes(&hello));
+        if write_frame(&mut stream, &hello_frame).await.is_err() {
+            return false;
+        }
+        let mut buf = Vec::new();
+        let welcome_frame = read_frame(&mut stream, &mut buf).await.ok();
+        let bye = Frame::new(
+            Opcode::Bye.as_u16(),
+            FLAG_EOS,
+            0,
+            to_cbor_bytes(&ByeRequest::default()),
+        );
+        let _ = write_frame(&mut stream, &bye).await;
+        let Some(welcome_frame) = welcome_frame else {
+            return false;
+        };
+        welcome_frame.opcode == Opcode::Welcome.as_u16()
+            && from_cbor_bytes::<WelcomePayload>(&welcome_frame.payload).is_ok()
     }
 
     /// The number of distinct credentials currently cached (test/introspection).
@@ -374,6 +645,7 @@ mod tests {
     fn test_config(max_credentials: usize, idle_ttl: Duration) -> BrainPoolConfig {
         BrainPoolConfig {
             brain_addr: "127.0.0.1:1".parse().expect("addr"),
+            brain_tls: None,
             pool_size: 1,
             max_credentials,
             idle_ttl,
