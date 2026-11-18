@@ -20,6 +20,7 @@ pub mod app;
 pub mod config;
 pub mod dto;
 pub mod error;
+pub mod metrics;
 pub mod pool;
 pub mod port;
 pub mod provider;
@@ -30,7 +31,7 @@ pub use config::EdgeConfig;
 pub use error::ApiError;
 pub use pool::{BrainPool, BrainPoolConfig};
 pub use port::{
-    BearerResolver, CredentialResolver, MeterEvent, MeteringSink, NoopMeter, Outcome,
+    BearerResolver, CredentialResolver, MeterEvent, MeteringSink, NoopMeter, Op, Outcome,
     ResolvedCredential, bearer_token,
 };
 pub use state::EdgeState;
@@ -46,8 +47,9 @@ pub use brain_db_sdk::wire::types::ActAs;
 use std::time::Duration;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderName, StatusCode, header};
+use axum::http::{HeaderName, Request, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -55,7 +57,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
 use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::{error, info};
 
 /// The header carrying the correlation id, in and out.
@@ -103,7 +105,25 @@ pub fn harden(router: Router, request_timeout: Duration, max_body_bytes: usize) 
         // Redact credential headers so they never reach the log sink, then trace
         // every request. Order matters: mark-sensitive is outermost so it wraps
         // the trace layer's view of the headers.
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                // Read the id assigned by this edge or an upstream load
+                // balancer: the id the caller was handed is the only one
+                // worth logging.
+                .make_span_with(|req: &Request<Body>| {
+                    tracing::info_span!(
+                        "request",
+                        method = %req.method(),
+                        path = %req.uri().path(),
+                        request_id = req
+                            .headers()
+                            .get(REQUEST_ID_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("-"),
+                    )
+                })
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
+        )
         .layer(SetSensitiveRequestHeadersLayer::new([
             header::AUTHORIZATION,
             HeaderName::from_static("x-api-key"),
@@ -123,6 +143,11 @@ pub fn harden(router: Router, request_timeout: Duration, max_body_bytes: usize) 
             max_body_bytes,
             app::middleware::body_limit::enforce,
         ))
+        // Carry the id the correlation layers above it have just set. It sits
+        // outside the timeout and body cap, so their handler-free responses
+        // stay in its scope and the error body and log line quote the id the
+        // caller was handed rather than one minted on the way out.
+        .layer(axum::middleware::from_fn(error::capture_request_id))
         // Correlation, outermost so every response carries it — including the
         // ones the layers above generate without reaching a handler (413 from
         // the body cap, 408 from the timeout). A caller-supplied
@@ -208,8 +233,13 @@ pub async fn run(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
     let plane = app::Plane::from_env().map_err(|e| format!("{}: {e}", app::PLANE_ENV))?;
     tracing::info!(?plane, "serving plane");
 
+    // The exposition path is left to the host because embedding applications
+    // usually serve their own metrics; the self-host binary is that host, so
+    // it claims `/metrics`.
     let app = harden(
-        app::router_for(state, plane).merge(health),
+        app::router_for(state, plane)
+            .merge(health)
+            .merge(metrics::metrics_router()),
         request_timeout,
         max_body_bytes,
     );
@@ -223,8 +253,11 @@ pub async fn run(config: EdgeConfig) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Readiness: 200 only when a TCP socket to Brain opens within the probe budget,
-/// else 503. Lets an orchestrator gate traffic on the downstream being live.
+/// Readiness: 200 only when Brain answers within the probe budget, else 503.
+/// A live pooled connection is asked for a round trip on its control stream, so
+/// readiness costs nothing in circulation once traffic is flowing; before the
+/// pool is warm, a fresh handshake stands in. Lets an orchestrator gate traffic
+/// on the downstream actually responding rather than merely accepting sockets.
 async fn readiness(State(state): State<EdgeState>) -> StatusCode {
     if state.pool().probe(Duration::from_secs(2)).await {
         StatusCode::OK

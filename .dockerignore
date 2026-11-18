@@ -6,6 +6,8 @@
 target/
 .git/
 .gitignore
+# The local cross-repo SDK patch has no sibling checkout in the image.
+.cargo/
 *.md
 Dockerfile
 .dockerignore
