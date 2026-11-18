@@ -38,9 +38,10 @@ use brain_db_sdk::wire::types::{
 use crate::app::extract::ApiJson;
 use crate::dto::llm_credential::{
     DeleteLlmCredentialDto, LlmCredentialCheckDto, LlmCredentialDto, PutLlmCredentialRequest,
+    TestLlmCredentialRequest,
 };
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::provider::{KeyCheck, Upstream, validate_key};
 use crate::state::EdgeState;
 
@@ -59,7 +60,7 @@ pub async fn put(
     // outbound call to a provider — neither belongs on an unauthenticated
     // path.
     let ident = state.resolve(&headers).await?;
-    state.admit("llm_credential_put", &ident).await?;
+    state.admit(Op::LlmCredentialPut, &ident).await?;
 
     let provider = body.validate().map_err(ApiError::bad_request)?;
     // `validate()` already proved this is a provider we serve, so the lookup
@@ -100,7 +101,7 @@ pub async fn put(
     let started = Instant::now();
     let out = client.put_llm_credential(&req).await;
     state.record(
-        "llm_credential_put",
+        Op::LlmCredentialPut,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -127,14 +128,14 @@ pub async fn get(
 ) -> Result<Json<LlmCredentialDto>, ApiError> {
     let mut req = LlmCredentialGetRequest { act_as: None };
     let ident = state.resolve(&headers).await?;
-    state.admit("llm_credential_get", &ident).await?;
+    state.admit(Op::LlmCredentialGet, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.get_llm_credential(&req).await;
     state.record(
-        "llm_credential_get",
+        Op::LlmCredentialGet,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -164,14 +165,14 @@ pub async fn delete(
         act_as: None,
     };
     let ident = state.resolve(&headers).await?;
-    state.admit("llm_credential_delete", &ident).await?;
+    state.admit(Op::LlmCredentialDelete, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.delete_llm_credential(&req).await;
     state.record(
-        "llm_credential_delete",
+        Op::LlmCredentialDelete,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -198,13 +199,13 @@ pub async fn delete(
 pub async fn test(
     State(state): State<EdgeState>,
     headers: HeaderMap,
-    ApiJson(body): ApiJson<PutLlmCredentialRequest>,
+    ApiJson(body): ApiJson<TestLlmCredentialRequest>,
 ) -> Result<Json<LlmCredentialCheckDto>, ApiError> {
     // Authenticated even though nothing is stored: this makes an outbound
     // call to a provider, and an unauthenticated caller must not be able to
     // spend this edge's network on one.
     let ident = state.resolve(&headers).await?;
-    state.admit("llm_credential_test", &ident).await?;
+    state.admit(Op::LlmCredentialTest, &ident).await?;
 
     let provider = body.validate().map_err(ApiError::bad_request)?;
     let upstream = Upstream::from_name(provider).ok_or_else(|| {
@@ -241,14 +242,14 @@ pub async fn verify(
         act_as: None,
     };
     let ident = state.resolve(&headers).await?;
-    state.admit("llm_credential_verify", &ident).await?;
+    state.admit(Op::LlmCredentialVerify, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.verify_llm_credential(&req).await;
     state.record(
-        "llm_credential_verify",
+        Op::LlmCredentialVerify,
         &ident,
         Outcome::of(&out),
         started.elapsed(),

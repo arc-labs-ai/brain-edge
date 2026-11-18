@@ -18,7 +18,7 @@ use crate::dto::entity::{
 use brain_db_sdk::wire::types::EntityTypeListRequest;
 
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `POST /v1/entities` — create a typed entity.
@@ -29,14 +29,14 @@ pub async fn create(
 ) -> Result<Json<CreateEntityResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("create_entity", &ident).await?;
+    state.admit(Op::CreateEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.create_entity(&req).await;
     state.record(
-        "create_entity",
+        Op::CreateEntity,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -53,14 +53,14 @@ pub async fn resolve(
 ) -> Result<Json<ResolveEntityResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("resolve_entity", &ident).await?;
+    state.admit(Op::ResolveEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.resolve_entity(&req).await;
     state.record(
-        "resolve_entity",
+        Op::ResolveEntity,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -77,7 +77,7 @@ pub async fn list(
 ) -> Result<Json<ListEntitiesResponseDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("list_entities", &ident).await?;
+    state.admit(Op::ListEntities, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -87,7 +87,7 @@ pub async fn list(
     let started = Instant::now();
     let out = client.list_entities_frames(&req).await;
     state.record(
-        "list_entities",
+        Op::ListEntities,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -104,13 +104,13 @@ pub async fn get(
 ) -> Result<Json<EntityDetailDto>, ApiError> {
     let mut req = get_request_from_id(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("get_entity", &ident).await?;
+    state.admit(Op::GetEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.get_entity(&req).await;
-    state.record("get_entity", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::GetEntity, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EntityDetailDto::from_get_response(resp)))
 }
@@ -125,13 +125,13 @@ pub async fn traverse(
 ) -> Result<Json<TraverseResponseDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("traverse", &ident).await?;
+    state.admit(Op::Traverse, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.traverse_relations_frames(&req).await;
-    state.record("traverse", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Traverse, &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(TraverseResponseDto::from_frames(frames)))
 }
@@ -150,14 +150,14 @@ pub async fn update(
 ) -> Result<Json<EntityDetailDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("update_entity", &ident).await?;
+    state.admit(Op::UpdateEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.update_entity(&req).await;
     state.record(
-        "update_entity",
+        Op::UpdateEntity,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -176,14 +176,14 @@ pub async fn rename(
 ) -> Result<Json<EntityDetailDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("rename_entity", &ident).await?;
+    state.admit(Op::RenameEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.rename_entity(&req).await;
     state.record(
-        "rename_entity",
+        Op::RenameEntity,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -206,14 +206,14 @@ pub async fn merge(
 ) -> Result<Json<MergeEntityResponseDto>, ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("merge_entities", &ident).await?;
+    state.admit(Op::MergeEntities, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.merge_entities(&req).await;
     state.record(
-        "merge_entities",
+        Op::MergeEntities,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -231,14 +231,14 @@ pub async fn unmerge(
 ) -> Result<Json<UnmergeEntityResponseDto>, ApiError> {
     let mut req = unmerge_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("unmerge_entity", &ident).await?;
+    state.admit(Op::UnmergeEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.unmerge_entity(&req).await;
     state.record(
-        "unmerge_entity",
+        Op::UnmergeEntity,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -259,14 +259,14 @@ pub async fn tombstone(
 ) -> Result<Json<TombstoneEntityResponseDto>, ApiError> {
     let mut req = tombstone_request(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("tombstone_entity", &ident).await?;
+    state.admit(Op::TombstoneEntity, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.tombstone_entity(&req).await;
     state.record(
-        "tombstone_entity",
+        Op::TombstoneEntity,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -289,14 +289,14 @@ pub async fn entity_types(
 ) -> Result<Json<ListEntityTypesResponseDto>, ApiError> {
     let mut req = EntityTypeListRequest::default();
     let ident = state.resolve(&headers).await?;
-    state.admit("entity_type_list", &ident).await?;
+    state.admit(Op::EntityTypeList, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.entity_type_list(&req).await;
     state.record(
-        "entity_type_list",
+        Op::EntityTypeList,
         &ident,
         Outcome::of(&out),
         started.elapsed(),

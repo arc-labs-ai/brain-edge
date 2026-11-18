@@ -18,7 +18,7 @@ use crate::dto::statement::{
     get_request_from, split_list_frames,
 };
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `GET /v1/statements/{id}` — fetch one statement by id.
@@ -30,14 +30,14 @@ pub async fn get(
 ) -> Result<Json<StatementDetailDto>, ApiError> {
     let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("get_statement", &ident).await?;
+    state.admit(Op::GetStatement, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.get_statement(&req).await;
     state.record(
-        "get_statement",
+        Op::GetStatement,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -61,7 +61,7 @@ pub async fn list(
 ) -> Result<Json<ListStatementsResponseDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("list_statements", &ident).await?;
+    state.admit(Op::ListStatements, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
@@ -71,7 +71,7 @@ pub async fn list(
     let started = Instant::now();
     let out = client.list_statements_frames(&req).await;
     state.record(
-        "list_statements",
+        Op::ListStatements,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -104,14 +104,14 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<CreateStatementResponseDto>), ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("create_statement", &ident).await?;
+    state.admit(Op::CreateStatement, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.create_statement(&req).await;
     state.record(
-        "create_statement",
+        Op::CreateStatement,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -133,14 +133,14 @@ pub async fn supersede(
 ) -> Result<(StatusCode, Json<SupersedeStatementResponseDto>), ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("supersede_statement", &ident).await?;
+    state.admit(Op::SupersedeStatement, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.supersede_statement(&req).await;
     state.record(
-        "supersede_statement",
+        Op::SupersedeStatement,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -165,14 +165,14 @@ pub async fn tombstone(
 ) -> Result<Json<TombstoneStatementResponseDto>, ApiError> {
     let mut req = query.to_tombstone(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("tombstone_statement", &ident).await?;
+    state.admit(Op::TombstoneStatement, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.tombstone_statement(&req).await;
     state.record(
-        "tombstone_statement",
+        Op::TombstoneStatement,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -196,14 +196,14 @@ pub async fn retract(
 ) -> Result<Json<RetractStatementResponseDto>, ApiError> {
     let mut req = query.to_retract(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("retract_statement", &ident).await?;
+    state.admit(Op::RetractStatement, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.retract_statement(&req).await;
     state.record(
-        "retract_statement",
+        Op::RetractStatement,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -222,14 +222,14 @@ pub async fn history(
 ) -> Result<Json<StatementHistoryResponseDto>, ApiError> {
     let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("statement_history", &ident).await?;
+    state.admit(Op::StatementHistory, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.statement_history_frames(&req).await;
     state.record(
-        "statement_history",
+        Op::StatementHistory,
         &ident,
         Outcome::of(&out),
         started.elapsed(),

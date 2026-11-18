@@ -19,7 +19,7 @@ use crate::dto::memory::{
 };
 use crate::dto::parse_memory_id;
 use crate::error::ApiError;
-use crate::port::{Outcome, RecallSignals};
+use crate::port::{Op, Outcome, RecallSignals};
 use crate::state::EdgeState;
 
 /// `POST /v1/memories` — store a memory.
@@ -32,7 +32,7 @@ pub async fn encode(
         return Err(ApiError::bad_request("text must not be blank"));
     }
     let ident = state.resolve(&headers).await?;
-    state.admit("encode", &ident).await?;
+    state.admit(Op::Encode, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // Ack-only: no `.wait(WaitMode::Derived)`. The HTTP surface has no `wait`
@@ -50,7 +50,7 @@ pub async fn encode(
     ident.scope(&mut req);
     let started = Instant::now();
     let out = client.encode(&req).await;
-    state.record("encode", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Encode, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(EncodeResponseDto::from(resp)))
 }
@@ -65,7 +65,7 @@ pub async fn recall(
         return Err(ApiError::bad_request("query must not be blank"));
     }
     let ident = state.resolve(&headers).await?;
-    state.admit("recall", &ident).await?;
+    state.admit(Op::Recall, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // `include_graph` is the caller's to set. `include_edges` stays off: the
@@ -122,7 +122,7 @@ pub async fn recall(
             .ok()
             .and_then(|f| RecallResponseDto::serialize_trace(f));
         state.record_recall(
-            "recall",
+            Op::Recall,
             &ident,
             Outcome::of(&out),
             Some(latency),
@@ -137,7 +137,7 @@ pub async fn recall(
     }
     let started = Instant::now();
     let out = client.recall(&req).await;
-    state.record("recall", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Recall, &ident, Outcome::of(&out), started.elapsed());
     let answer = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(RecallResponseDto::from(answer)))
 }
@@ -152,13 +152,13 @@ pub async fn list(
 ) -> Result<Json<MemoryListPageDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("memory_list", &ident).await?;
+    state.admit(Op::MemoryList, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.memory_list_frames(&req).await;
-    state.record("memory_list", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::MemoryList, &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(MemoryListPageDto::from_frames(frames)))
 }
@@ -175,7 +175,7 @@ pub async fn inspect(
 ) -> Result<Json<MemoryInspectDto>, ApiError> {
     let wire_id = parse_memory_id(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("memory_inspect", &ident).await?;
+    state.admit(Op::MemoryInspect, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let req = MemoryInspectRequest {
@@ -185,7 +185,7 @@ pub async fn inspect(
     let started = Instant::now();
     let out = client.memory_inspect(&req).await;
     state.record(
-        "memory_inspect",
+        Op::MemoryInspect,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -202,7 +202,7 @@ pub async fn forget(
 ) -> Result<Json<ForgetResponseDto>, ApiError> {
     let id = body.parse_id().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("forget", &ident).await?;
+    state.admit(Op::Forget, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let mut builder = ForgetBuilder::new(id);
@@ -213,7 +213,7 @@ pub async fn forget(
     ident.scope(&mut req);
     let started = Instant::now();
     let out = client.forget(&req).await;
-    state.record("forget", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Forget, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ForgetResponseDto::from(resp)))
 }
@@ -230,14 +230,14 @@ pub async fn encode_vector(
 ) -> Result<Json<EncodeResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("encode_vector_direct", &ident).await?;
+    state.admit(Op::EncodeVectorDirect, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.encode_vector_direct(&req).await;
     state.record(
-        "encode_vector_direct",
+        Op::EncodeVectorDirect,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -258,14 +258,14 @@ pub async fn materialize_procedural(
     let body = body.map_or_else(MaterializeProceduralBody::default, |Json(b)| b);
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("materialize_procedural", &ident).await?;
+    state.admit(Op::MaterializeProcedural, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.materialize_procedural(&req).await;
     state.record(
-        "materialize_procedural",
+        Op::MaterializeProcedural,
         &ident,
         Outcome::of(&out),
         started.elapsed(),

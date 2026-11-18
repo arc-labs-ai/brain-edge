@@ -544,6 +544,19 @@ pub struct MemoryInspectDto {
     /// edge asserted with `/v1/links` never appears there, which left linking
     /// write-only over HTTP.
     pub edges: Vec<MemoryEdgeDto>,
+    /// How many memory↔memory edges are anchored at this memory in total,
+    /// counted before the engine's per-direction cap. This is the number to
+    /// show a caller who asked how connected a memory is; `edges.len()` is
+    /// only how much of the set this response carried.
+    /// `None` means the server did not report a total; it is distinct from a
+    /// reported total of zero.
+    pub edge_total_count: Option<u32>,
+    /// True when `edges` is a capped view of the set rather than the whole of
+    /// it. The engine answers inspect with a bounded view because it is a
+    /// single-shot diagnostic; a caller that needs the full enumeration reads
+    /// it from `GET /v1/graph`, which paginates. Without this flag a capped
+    /// view is indistinguishable from a complete one.
+    pub edges_truncated: bool,
 }
 
 /// One memory↔memory edge.
@@ -571,6 +584,9 @@ impl From<MemoryEdgeWire> for MemoryEdgeDto {
             direction: match e.direction {
                 EdgeDirectionWire::Outgoing => "outgoing",
                 EdgeDirectionWire::Incoming => "incoming",
+                // A newer server's direction is not evidence of either
+                // direction, just as it is not evidence of no edge.
+                EdgeDirectionWire::Unknown => "unknown",
             },
             peer: e.peer.to_string(),
             weight: e.weight,
@@ -582,11 +598,19 @@ impl From<MemoryEdgeWire> for MemoryEdgeDto {
 
 impl From<MemoryInspectResponse> for MemoryInspectDto {
     fn from(r: MemoryInspectResponse) -> Self {
+        // The engine's own verdict on completeness, which also catches an
+        // engine that reports a total without the flag.
+        let edges_truncated = !r.edges_are_complete();
+        // A total below the number of edges actually carried cannot be true,
+        // so the count of what arrived is the floor.
+        let carried = u32::try_from(r.edges.len()).unwrap_or(u32::MAX);
         Self {
             memory_id: r.memory_id.to_string(),
             text: r.text,
             artifact: StageArtifactDto::from(r.artifact),
+            edge_total_count: r.edge_total_count.map(|total| total.max(carried)),
             edges: r.edges.into_iter().map(MemoryEdgeDto::from).collect(),
+            edges_truncated,
         }
     }
 }
@@ -1106,6 +1130,8 @@ mod memory_tests {
                     annotation: None,
                 },
             ],
+            edge_total_count: Some(2),
+            edges_truncated: false,
         };
         let dto = MemoryInspectDto::from(resp);
         assert_eq!(dto.text, "hello");
@@ -1137,6 +1163,55 @@ mod memory_tests {
         assert_eq!(dto.edges[1].direction, "incoming");
         assert_eq!(dto.edges[1].peer, "7");
         assert!(dto.edges[1].annotation.is_none());
+        // A complete view reports the count it carried and claims no cut.
+        assert_eq!(dto.edge_total_count, Some(2));
+        assert!(!dto.edges_truncated);
+    }
+
+    /// Inspect answers with a bounded edge view, so a caller needs the true
+    /// total and an explicit cut flag to tell a capped answer from a whole
+    /// one. A total below what arrived is reported as what arrived, because a
+    /// count smaller than the edges in hand cannot be right.
+    #[test]
+    fn inspect_reports_the_edge_total_and_whether_the_view_was_cut() {
+        let edge = || MemoryEdgeWire {
+            kind: EdgeKindWire::Caused,
+            direction: EdgeDirectionWire::Outgoing,
+            peer: 5,
+            weight: 0.5,
+            created_at_unix_nanos: 1,
+            annotation: None,
+        };
+        let bundle = || EncodeStageArtifact {
+            vector: Vec::new(),
+            record: None,
+            hype_questions: Vec::new(),
+            keyword_fields: Vec::new(),
+            graph: None,
+        };
+
+        let cut = MemoryInspectDto::from(MemoryInspectResponse {
+            memory_id: 1,
+            text: String::new(),
+            artifact: bundle(),
+            edges: vec![edge()],
+            edge_total_count: Some(900),
+            edges_truncated: true,
+        });
+        assert_eq!(cut.edges.len(), 1);
+        assert_eq!(cut.edge_total_count, Some(900));
+        assert!(cut.edges_truncated);
+
+        let understated = MemoryInspectDto::from(MemoryInspectResponse {
+            memory_id: 2,
+            text: String::new(),
+            artifact: bundle(),
+            edges: vec![edge(), edge()],
+            edge_total_count: Some(0),
+            edges_truncated: false,
+        });
+        assert_eq!(understated.edge_total_count, Some(2));
+        assert!(!understated.edges_truncated);
     }
 }
 
@@ -1228,7 +1303,9 @@ impl EncodeVectorBody {
 /// caller reimplements over `/v1/recall`.
 #[derive(Debug, Default, Deserialize)]
 pub struct MaterializeProceduralBody {
-    /// Only directives from these sessions.
+    /// Only directives from these sessions. At most `MAX_SESSION_FILTER`
+    /// (1024) of them — Brain refuses a longer list, so a caller wanting a
+    /// wider read drops the filter rather than enumerating every session.
     #[serde(default)]
     pub sessions: Vec<u64>,
     /// How many to consider. `0` = the server default.
@@ -1247,14 +1324,15 @@ impl MaterializeProceduralBody {
     /// is left zero for Brain to fill from `act_as`.
     ///
     /// # Errors
-    /// A confidence floor outside `[0,1]`.
+    /// A confidence floor outside `[0,1]`, or a session list past
+    /// `MAX_SESSION_FILTER`.
     pub fn to_request(self) -> Result<MaterializeProceduralRequest, String> {
         if !(0.0..=1.0).contains(&self.min_confidence) {
             return Err("min_confidence must be between 0.0 and 1.0".into());
         }
         Ok(MaterializeProceduralRequest {
             space_id: [0u8; 16],
-            session_filter: (!self.sessions.is_empty()).then_some(self.sessions),
+            session_filter: super::session_filter(self.sessions)?,
             top_k: self.top_k,
             min_confidence: self.min_confidence,
             categories: self.categories,
@@ -1419,6 +1497,27 @@ mod memory_extras_tests {
             .to_request()
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_materialize_session_filter_past_the_cap_is_refused_here() {
+        use super::super::MAX_SESSION_FILTER;
+
+        let req = MaterializeProceduralBody {
+            sessions: vec![1; MAX_SESSION_FILTER],
+            ..MaterializeProceduralBody::default()
+        }
+        .to_request()
+        .expect("a list at the cap is accepted");
+        assert_eq!(req.session_filter.unwrap().len(), MAX_SESSION_FILTER);
+
+        let err = MaterializeProceduralBody {
+            sessions: vec![1; MAX_SESSION_FILTER + 1],
+            ..MaterializeProceduralBody::default()
+        }
+        .to_request()
+        .expect_err("past the cap Brain answers InvalidArgument; name it here");
+        assert!(err.contains("1024"), "names the cap: {err}");
     }
 
     #[test]

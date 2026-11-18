@@ -111,7 +111,8 @@ pub struct SchemaUploadBody {
 #[derive(Debug, Serialize)]
 pub struct SchemaUploadDto {
     pub namespace: String,
-    /// `0` means the upload was rejected — a validation failure, or `dry_run`.
+    /// The version this document became. `0` only on a `dry_run`: a refused
+    /// document is answered with a `4xx` rather than a `0` in a `200` body.
     pub schema_version: u32,
     pub backward_compatible: bool,
     pub validation_errors: Vec<SchemaErrorDto>,
@@ -443,12 +444,11 @@ mod schema_tests {
     }
 
     #[test]
-    fn get_response_maps_and_drops_source_blob() {
+    fn get_response_maps_every_field() {
         let dto = SchemaDto::from(SchemaGetResponse {
             namespace: "people".into(),
             schema_version: 2,
             schema_document: "entity Person {}".into(),
-            source_blob: vec![1, 2, 3], // AST blob is not surfaced
             uploaded_at_unix_nanos: 99,
             validator_version: 1,
         });

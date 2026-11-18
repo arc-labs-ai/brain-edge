@@ -44,6 +44,34 @@ pub(crate) fn bounded(
     }
 }
 
+/// Ceiling on `session_filter` — the list of session ids a read may be
+/// narrowed to.
+///
+/// Mirrors Brain's own cap. The engine accepted an unbounded list until it
+/// didn't: a longer list is now `InvalidArgument`. So a caller that sends
+/// 5,000 ids is refused either way, and the only question is whether the
+/// refusal names the cap here, before a round trip, or arrives as a generic
+/// validation error from the engine.
+pub(crate) const MAX_SESSION_FILTER: usize = 1024;
+
+/// Turn a caller's `sessions` list into the wire's optional `session_filter`.
+///
+/// An empty list is NO filter rather than a filter matching nothing — a
+/// distinction an HTTP caller gets by omitting the field, and the reason this
+/// returns an `Option` rather than the list.
+///
+/// # Errors
+/// A list longer than [`MAX_SESSION_FILTER`].
+pub(crate) fn session_filter(sessions: Vec<u64>) -> Result<Option<Vec<u64>>, String> {
+    if sessions.len() > MAX_SESSION_FILTER {
+        return Err(format!(
+            "sessions must name at most {MAX_SESSION_FILTER} sessions, got {}",
+            sessions.len()
+        ));
+    }
+    Ok((!sessions.is_empty()).then_some(sessions))
+}
+
 /// Parse a decimal memory-id string to a 128-bit wire id.
 pub(crate) fn parse_memory_id(s: &str) -> Result<WireMemoryId, String> {
     s.trim()
@@ -176,5 +204,27 @@ mod tests {
         assert!(parse_uuid("not-a-uuid").is_err());
         assert!(parse_uuid("11000000-0000-0000-0000-00000000002").is_err()); // 31 hex
         assert!(parse_uuid("zz000000-0000-0000-0000-00000000002a").is_err()); // non-hex
+    }
+
+    #[test]
+    fn an_empty_session_list_is_no_filter_at_all() {
+        // Not a filter matching nothing: that would answer every read with an
+        // empty page for callers who simply did not narrow it.
+        assert!(session_filter(Vec::new()).unwrap().is_none());
+        assert_eq!(session_filter(vec![7]).unwrap().unwrap(), vec![7]);
+    }
+
+    #[test]
+    fn a_session_list_past_the_cap_is_refused_here() {
+        // At the cap, not over it. An off-by-one here would make the edge
+        // refuse a list the engine accepts, which is worse than not checking.
+        assert!(
+            session_filter(vec![1; MAX_SESSION_FILTER])
+                .unwrap()
+                .is_some()
+        );
+        let err = session_filter(vec![1; MAX_SESSION_FILTER + 1]).expect_err("past the cap");
+        assert!(err.contains("1024"), "names the cap: {err}");
+        assert!(err.contains("1025"), "and what was sent: {err}");
     }
 }

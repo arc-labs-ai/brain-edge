@@ -8,6 +8,8 @@
 //! `tests/ports.rs` covers the commercial seam (who is consulted, what is
 //! metered). This file covers what happens to a request that goes wrong.
 
+use std::io::Write;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -15,6 +17,31 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::routing::get;
 use tower::ServiceExt;
+
+#[derive(Clone)]
+struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Capture {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("capture lock")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// The body cap, timeout and id header used throughout. Small enough to reach.
 const MAX_BODY: usize = 64;
@@ -189,4 +216,51 @@ async fn a_stalled_handler_is_cut_at_the_timeout() {
     // gets an explicit 408 rather than waiting on a socket that never answers.
     let resp = send(get_req("/slow")).await;
     assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
+}
+
+#[test]
+fn an_internal_error_uses_one_request_id_in_header_body_and_log() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let writer = Capture(captured.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(writer)
+        .finish();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    tracing::subscriber::with_default(subscriber, || {
+        runtime.block_on(async {
+            let router = brain_edge::harden(
+                Router::new().route(
+                    "/internal",
+                    get(|| async { brain_edge::ApiError::internal("database detail") }),
+                ),
+                TIMEOUT,
+                MAX_BODY,
+            );
+            let response = router
+                .oneshot(get_req("/internal"))
+                .await
+                .expect("router response");
+            let id = response
+                .headers()
+                .get("x-request-id")
+                .expect("request id header")
+                .to_str()
+                .expect("request id is text")
+                .to_owned();
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("read body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("body is json");
+            assert_eq!(body["error"]["request_id"], id);
+
+            let log = String::from_utf8(captured.lock().expect("capture lock").clone())
+                .expect("log is utf8");
+            assert!(log.contains(&id), "log must contain the response id: {log}");
+        });
+    });
 }

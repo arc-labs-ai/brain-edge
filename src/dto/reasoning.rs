@@ -210,6 +210,8 @@ fn plan_status_str(s: PlanStatus) -> &'static str {
         PlanStatus::BudgetExhausted => "budget_exhausted",
         PlanStatus::NoPathFound => "no_path_found",
         PlanStatus::Cancelled => "cancelled",
+        // A newer terminal status is not evidence of any known reason.
+        PlanStatus::Unknown => "unknown",
     }
 }
 
@@ -357,6 +359,8 @@ fn reason_status_str(s: ReasonStatus) -> &'static str {
         ReasonStatus::BudgetExhausted => "budget_exhausted",
         ReasonStatus::DepthLimitReached => "depth_limit_reached",
         ReasonStatus::Cancelled => "cancelled",
+        // A newer terminal status is not evidence of any known reason.
+        ReasonStatus::Unknown => "unknown",
     }
 }
 

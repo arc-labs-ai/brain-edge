@@ -57,7 +57,7 @@ use tracing::{debug, warn};
 use crate::app::extract::ApiQuery;
 use crate::dto::subscribe::{SubscribeQuery, SubscriptionClosedDto, SubscriptionEventDto};
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// How many events may sit between Brain and a slow HTTP reader before the
@@ -126,7 +126,7 @@ pub async fn subscribe(
         .and_then(|v| v.trim().parse::<u64>().ok());
 
     let ident = state.resolve(&headers).await?;
-    state.admit("subscribe", &ident).await?;
+    state.admit(Op::Subscribe, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // The space the feed is scoped to. Read here rather than in the DTO
@@ -141,7 +141,7 @@ pub async fn subscribe(
 
     let started = Instant::now();
     let out = client.subscribe(&req).await;
-    state.record("subscribe", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Subscribe, &ident, Outcome::of(&out), started.elapsed());
     let mut subscription = out.map_err(|e| ApiError::from_brain(&e))?;
 
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(CHANNEL_DEPTH);

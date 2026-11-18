@@ -32,8 +32,8 @@ from it, so your key's scoping is honored end to end.
 | `POST`   | `/v1/memories`    | `{ text, context?, occurred_at? }`         | `{ memory_id, was_deduplicated, salience, kind, created_at_unix_nanos, auto_edges_added }` |
 | `GET`    | `/v1/memories`    | `limit?` (≤100, default 50), `cursor?`, `dir?` (`desc` default \| `asc`), `include_tombstoned?` | `{ items: [...], next_cursor? }` — `next_cursor` is omitted on the last page |
 | `DELETE` | `/v1/memories`    | `{ memory_id, hard? }`                     | `{ memory_id, was_already_forgotten, edges_removed }` |
-| `GET` | `/v1/memories/{id}/inspect` | — | `{ memory_id, text, artifact, edges }` — the per-stage write-pipeline output (embedding, extraction, HyPE questions, extracted graph) |
-| `POST`   | `/v1/recall`      | `{ query \| cue, max_results?, subject? }` | `{ answer_kind, memories: [{ memory_id, text, similarity_score, confidence, salience, kind, created_at_unix_nanos }] }` |
+| `GET` | `/v1/memories/{id}/inspect` | — | `{ memory_id, text, artifact, edges, edge_total_count, edges_truncated }` — the per-stage write-pipeline output (embedding, extraction, HyPE questions, extracted graph) |
+| `POST`   | `/v1/recall`      | `{ query \| cue, max_results?, subject? }` | `{ answer_kind, memories: [{ memory_id, text, similarity_score, confidence, salience, kind, created_at_unix_nanos }] }` — `max_results` past the engine's ceiling is **clamped, never refused**, and `0` or omitted means the server default, so a caller cannot read the returned count as "that is all there is" |
 | `POST`   | `/v1/links`       | `{ source, target, kind, weight? }`        | `{ source, target, kind, weight, created_at_unix_nanos, already_existed }` |
 | `DELETE` | `/v1/links`       | `{ source, target, kind }`                 | `{ source, target, kind, removed }` |
 | `POST`   | `/v1/plan`        | `{ start:{text\|memory_id}, goal:{…}, max_steps?, strategy? }` | `{ steps: [{ step_index, memory_id, text, transition_kind, confidence, estimated_distance_to_goal }] }` |
@@ -126,7 +126,7 @@ credential, never named in the request.
 
 | Method   | Path                | Body / query        | Returns |
 | -------- | ------------------- | ------------------- | ------- |
-| `POST` | `/v1/sessions` | `{ session_id, title? }` | `{ space_id, session_id, created, created_at_unix_nanos, last_active_unix_nanos, memory_count }` — idempotent on the id you choose |
+| `POST` | `/v1/sessions` | `{ session_id, title? }` | `{ space_id, session_id, created, created_at_unix_nanos, last_active_unix_nanos, memory_count }` — idempotent on the id you choose; `title` is capped at **256 bytes** (bytes, not characters — a multi-byte label reaches the cap sooner) and a longer one is refused, not truncated |
 | `GET` | `/v1/sessions` | `{ limit? }` | `{ space_id, sessions }` |
 | `DELETE` | `/v1/sessions/{id}` | `{ hard? }` | `{ space_id, session_id, existed, memories_forgotten }` — soft unless `hard`, which also forgets the session's memories |
 | `POST` | `/v1/spaces` | — | `{ space, created, created_at_unix_nanos, last_active_unix_nanos, memory_count, session_count }` |
@@ -141,14 +141,14 @@ resolves to. `whoami` is the way to check which one that is first.
 
 | Method | Path                 | Body / query                  | Returns |
 | ------ | -------------------- | ----------------------------- | ------- |
-| `POST` | `/v1/query/explain` | `{ text, entity_anchor?, kinds?, predicates?, sessions?, time_range?, as_of_record_time_unix_nanos?, confidence_min?, include_tombstoned?, include_superseded?, limit?, retrievers?, fusion? }` | `{ plan_text, estimated_cost_ms }` — the plan and its estimated cost, **without running the query** |
+| `POST` | `/v1/query/explain` | `{ text, entity_anchor?, kinds?, predicates?, sessions?, time_range?, as_of_record_time_unix_nanos?, confidence_min?, include_tombstoned?, include_superseded?, limit?, retrievers?, fusion? }` | `{ plan_text, estimated_cost_ms }` — the plan and its estimated cost, **without running the query**. `sessions` names at most **1024** sessions; a longer list is a `400`, so narrow by time or drop the filter instead of enumerating a whole history |
 | `POST` | `/v1/query/trace` | `{ text, entity_anchor?, kinds?, predicates?, sessions?, time_range?, as_of_record_time_unix_nanos?, confidence_min?, include_tombstoned?, include_superseded?, limit?, retrievers?, fusion? }` | `{ trace_text, total_latency_ms }` — what each stage actually cost — note this **runs** the query |
 
 ### Procedural, direct vectors, change feed
 
 | Method | Path                            | Body / query                                     | Returns |
 | ------ | ------------------------------- | ------------------------------------------------ | ------- |
-| `POST` | `/v1/procedural/materialize` | — | `{ system_block, statement_ids, total_candidates, trimmed_by_budget }` — the learned standing instructions, with the statement ids behind each line |
+| `POST` | `/v1/procedural/materialize` | `{ sessions?, top_k?, min_confidence?, categories? }` | `{ system_block, statement_ids, total_candidates, trimmed_by_budget }` — the learned standing instructions, with the statement ids behind each line. `sessions` names at most **1024** sessions, same as the query verbs; `trimmed_by_budget` is the one to read before treating the block as complete |
 | `POST` | `/v1/memories/vector` | `{ text, vector, model_fingerprint, session?, kind?, salience_hint?, deduplicate? }` | `{ memory_id, was_deduplicated, salience, kind, created_at_unix_nanos, auto_edges_added }` — same shape as `POST /v1/memories` |
 | `GET` | `/v1/subscribe` | `{ sessions?, kinds?, memories?, include_history?, from_lsn?, max_inflight? }` | `{ event_type, memory_id, session_id, text, kind, salience, timestamp_unix_nanos, lsn, graph, edge, stage_kind, stage_outcome, stage }` — **Server-Sent Events**: one event per change as it lands |
 
@@ -188,7 +188,11 @@ extraction and HyPE are mandatory rather than optional enrichment.
 | `BRAIN_EDGE_WIRE_LISTEN`        | unset            | Wire-proxy listen address — `ip:port` or `host:port`. **Unset = the wire proxy is off**, HTTP only |
 | `BRAIN_EDGE_WIRE_RATE_CAPACITY` | `0`              | Per-credential token-bucket burst on the wire proxy (`0` = no limit) |
 | `BRAIN_EDGE_WIRE_RATE_REFILL_PER_SEC` | `0`        | Per-credential refill rate, ops/sec (`0` = no limit) |
-| `BRAIN_EDGE_PLANE`              | `both`           | Which plane this process serves — `both`, `data` (memory verbs only; **no key material is reachable in this process**), or `credential` (BYOK management + broker only). An unrecognised value is a hard error, not a silent fallback to `both` |
+| `BRAIN_EDGE_PLANE`              | `both`           | Which plane this process serves — `both`, `data` (memory verbs only; **no key material is reachable in this process**), or `credential` (BYOK management only). An unrecognised value is a hard error, not a silent fallback to `both` |
+| `BRAIN_EDGE_BRAIN_TLS`          | unset (off)      | Speak TLS to Brain when `1` or `true`; anything else, including unset, keeps plaintext TCP — which is what a Brain on this host's loopback needs and what every existing deployment uses |
+| `BRAIN_EDGE_BRAIN_TLS_ROOT_PEM` | unset            | Path to an additional trusted-root PEM for that connection, on top of the platform roots. Read at startup: an unreadable path is a startup error, not a silent fallback to the platform set |
+| `BRAIN_EDGE_BRAIN_TLS_SERVER_NAME` | unset         | TLS server name to verify Brain's certificate against, when it does not match the dial address |
+| `BRAIN_EDGE_LOG_FORMAT`         | `text`           | Log encoding — `text` (or unset) for an operator reading by eye, `json` for one JSON object per line. An unrecognised value is a hard startup error: a configured `json` followed by human-readable output leaves an aggregator with nothing parseable and hides the mistake |
 | `RUST_LOG`                      | `brain_edge=info`| Log filter                                          |
 
 ## What a failing request looks like
@@ -202,19 +206,38 @@ the timeout.
 Errors are always the same envelope:
 
 ```json
-{ "error": { "code": "bad_request", "message": "k must be 1..=100" } }
+{
+  "error": {
+    "code": "bad_request",
+    "message": "k must be 1..=100",
+    "engine_code": "invalid_argument",
+    "errors": [{ "field": "k", "code": "invalid_argument", "message": "k must be 1..=100" }]
+  }
+}
 ```
 
 **A `4xx` message describes your request** and is safe to act on. **A `5xx`
 message does not**: statuses in that range mean the edge or the engine behind it
 is in trouble, and the detail — an OS error, a shard's internal state, a
 frame-codec fault — describes the edge's conversation with its database rather
-than anything the caller can fix. That detail is written to the log alongside the
-request id instead, so quoting the `x-request-id` from a failed call is enough
-for an operator to find it.
+than anything the caller can fix. That detail is written to the log on the same
+request line as the `x-request-id`, so quoting that id is enough for an operator
+to find it. Every request has such a line, including successful and `4xx` calls.
+
+A `429` or `503` includes `Retry-After` in whole seconds when Brain supplied a
+backoff hint.
 
 A panicking handler returns a `500` in this same envelope rather than dropping
 the connection, and does not take the process down.
+
+These status/code pairs are worth knowing before the first write:
+
+| Status | `code` | What it means |
+| ------ | ------ | ------------- |
+| `429` | `rate_limited` | The engine is throttling this caller; back off and retry |
+| `429` | `quota.exceeded` | A caller or transaction ceiling was reached; retrying does not move it |
+| `409` | `llm_credential.missing` | The namespace has no provider key. Extraction and HyPE are mandatory, so every write is refused until `PUT /v1/llm-credential` registers one. Deliberately **not** a `503`: every SDK retries `503`, and this condition cannot heal on its own |
+| `403` | `forbidden` | The write named the reserved `brain` namespace. User data needs a namespace of its own; this one is the engine's |
 
 **The wire proxy** is opt-in and separate from the HTTP surface. With
 `BRAIN_EDGE_WIRE_LISTEN` set, the edge also accepts raw Brain **wire/CBOR**

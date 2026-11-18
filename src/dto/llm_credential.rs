@@ -41,6 +41,61 @@ pub struct PutLlmCredentialRequest {
     pub api_key: String,
 }
 
+/// `POST /v1/llm-credential/test` request — a key to check, nothing stored.
+///
+/// Deliberately NOT `PutLlmCredentialRequest`. Registering a key records which
+/// model it serves, because the extraction and HyPE stages need one. Checking a
+/// key does not: the probe asks the provider to list its models with that key
+/// and reports whether the provider accepted it, so a model is not part of the
+/// question being asked. Requiring one here refuses a caller who has a key to
+/// check and has not yet chosen a model — which is the ordinary case while
+/// someone is still deciding whether the key works at all.
+#[derive(Deserialize)]
+pub struct TestLlmCredentialRequest {
+    /// `"openai"` or `"anthropic"`.
+    pub provider: String,
+    /// The provider key to probe. Never stored, logged or returned.
+    pub api_key: String,
+}
+
+/// Redacting `Debug` for the same reason as [`PutLlmCredentialRequest`]: a
+/// derived one is a single `tracing` call away from a live key in a log.
+impl fmt::Debug for TestLlmCredentialRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestLlmCredentialRequest")
+            .field("provider", &self.provider)
+            .field("api_key", &"[redacted]")
+            .finish()
+    }
+}
+
+impl TestLlmCredentialRequest {
+    /// Validate the request, returning the normalised provider.
+    ///
+    /// # Errors
+    /// A human-readable reason. **Never quotes the key**, including on failure.
+    pub fn validate(&self) -> Result<&'static str, String> {
+        let provider = self.provider.trim().to_ascii_lowercase();
+        let Some(known) = crate::provider::Upstream::from_name(&provider) else {
+            return Err(format!(
+                "unsupported provider `{}`: expected one of {}",
+                self.provider,
+                supported_providers().join(", ")
+            ));
+        };
+        if self.api_key.trim().is_empty() {
+            return Err("`api_key` must not be empty".into());
+        }
+        // A key with surrounding whitespace is almost always a copy-paste
+        // artifact, and it would fail upstream with an opaque 401 that reads
+        // like a wrong key rather than a stray space.
+        if self.api_key != self.api_key.trim() {
+            return Err("`api_key` has leading or trailing whitespace".into());
+        }
+        Ok(known.provider())
+    }
+}
+
 /// Redacting `Debug`, written by hand rather than derived.
 ///
 /// A derived `Debug` on a request body is one `tracing` call away from putting

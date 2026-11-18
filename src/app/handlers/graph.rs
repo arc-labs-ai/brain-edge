@@ -13,7 +13,7 @@ use crate::dto::graph::{
     GraphFetchQuery, GraphPageDto, LinkBody, LinkResponseDto, UnlinkBody, UnlinkResponseDto,
 };
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `GET /v1/graph` — paginated export of the caller's typed graph as nodes +
@@ -26,13 +26,13 @@ pub async fn fetch(
 ) -> Result<Json<GraphPageDto>, ApiError> {
     let mut req = query.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("graph_fetch", &ident).await?;
+    state.admit(Op::GraphFetch, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.graph_fetch_frames(&req).await;
-    state.record("graph_fetch", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::GraphFetch, &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(GraphPageDto::from_frames(frames)))
 }
@@ -45,7 +45,7 @@ pub async fn link(
 ) -> Result<Json<LinkResponseDto>, ApiError> {
     let (source, target, kind, weight) = body.parts().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("link", &ident).await?;
+    state.admit(Op::Link, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let req = LinkRequest {
@@ -59,7 +59,7 @@ pub async fn link(
     };
     let started = Instant::now();
     let out = client.link(&req).await;
-    state.record("link", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Link, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(LinkResponseDto::from(resp)))
 }
@@ -72,7 +72,7 @@ pub async fn unlink(
 ) -> Result<Json<UnlinkResponseDto>, ApiError> {
     let (source, target, kind) = body.parts().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("unlink", &ident).await?;
+    state.admit(Op::Unlink, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     let req = UnlinkRequest {
@@ -85,7 +85,7 @@ pub async fn unlink(
     };
     let started = Instant::now();
     let out = client.unlink(&req).await;
-    state.record("unlink", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Unlink, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(UnlinkResponseDto::from(resp)))
 }

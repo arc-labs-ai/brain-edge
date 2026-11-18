@@ -75,7 +75,9 @@ pub struct QueryBody {
     /// Only these predicates.
     #[serde(default)]
     pub predicates: Vec<String>,
-    /// Only these sessions.
+    /// Only these sessions. At most `MAX_SESSION_FILTER` (1024) of them —
+    /// Brain refuses a longer list, so a caller that wants a wider read drops
+    /// the filter rather than enumerating every session.
     #[serde(default)]
     pub sessions: Vec<u64>,
     /// Restrict to a time window.
@@ -153,7 +155,8 @@ impl QueryBody {
     ///
     /// # Errors
     /// Blank text, an anchor that is not a UUID, an unknown kind or
-    /// retriever, or a confidence floor outside `[0,1]`.
+    /// retriever, a confidence floor outside `[0,1]`, or a session list past
+    /// `MAX_SESSION_FILTER`.
     pub fn to_request(self) -> Result<QueryRequest, String> {
         let text = self.text.trim().to_owned();
         if text.is_empty() {
@@ -192,7 +195,7 @@ impl QueryBody {
                 .map(|k| kind_byte(k))
                 .collect::<Result<Vec<_>, _>>()?,
             predicate_filter: self.predicates,
-            session_filter: (!self.sessions.is_empty()).then_some(self.sessions),
+            session_filter: super::session_filter(self.sessions)?,
             time_filter: self.time_range.map(|t| TimeRangeWire {
                 from_unix_ms: t.from_unix_ms,
                 to_unix_ms: t.to_unix_ms,
@@ -280,6 +283,27 @@ mod query_tests {
             text: text.into(),
             ..QueryBody::default()
         }
+    }
+
+    #[test]
+    fn a_session_filter_past_the_cap_is_refused_before_the_round_trip() {
+        use super::super::MAX_SESSION_FILTER;
+
+        let req = QueryBody {
+            sessions: vec![1; MAX_SESSION_FILTER],
+            ..body("who works at Arc")
+        }
+        .to_request()
+        .expect("a list at the cap is accepted");
+        assert_eq!(req.session_filter.unwrap().len(), MAX_SESSION_FILTER);
+
+        let err = QueryBody {
+            sessions: vec![1; MAX_SESSION_FILTER + 1],
+            ..body("who works at Arc")
+        }
+        .to_request()
+        .expect_err("a list past the cap is Brain's InvalidArgument; say so here");
+        assert!(err.contains("1024"), "names the cap: {err}");
     }
 
     #[test]

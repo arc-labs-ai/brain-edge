@@ -17,7 +17,7 @@ use crate::dto::space::{
     delete_space_request,
 };
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `POST /v1/spaces` — provision the caller's space (`SPACE_CREATE`).
@@ -35,13 +35,18 @@ pub async fn create(
     let body = body.map_or_else(CreateSpaceBody::default, |Json(b)| b);
     let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
-    state.admit("create_space", &ident).await?;
+    state.admit(Op::CreateSpace, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.create_space(&req).await;
-    state.record("create_space", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        Op::CreateSpace,
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     let status = if resp.created {
         StatusCode::CREATED
@@ -59,13 +64,13 @@ pub async fn list(
 ) -> Result<Json<ListSpacesResponseDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
-    state.admit("list_spaces", &ident).await?;
+    state.admit(Op::ListSpaces, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.list_spaces(&req).await;
-    state.record("list_spaces", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::ListSpaces, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ListSpacesResponseDto::from(resp)))
 }
@@ -78,13 +83,18 @@ pub async fn delete(
 ) -> Result<Json<SpaceErasedDto>, ApiError> {
     let mut req = delete_space_request();
     let ident = state.resolve(&headers).await?;
-    state.admit("delete_space", &ident).await?;
+    state.admit(Op::DeleteSpace, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.delete_space(&req).await;
-    state.record("delete_space", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        Op::DeleteSpace,
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(SpaceErasedDto::from(resp)))
 }

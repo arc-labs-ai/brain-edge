@@ -154,6 +154,8 @@ fn event_type_str(t: EventType) -> &'static str {
         EventType::EdgeAdded => "edge_added",
         EventType::EdgeRemoved => "edge_removed",
         EventType::EdgeSuperseded => "edge_superseded",
+        // A newer event kind is not evidence of any known event.
+        EventType::Unknown => "unknown",
     }
 }
 
@@ -171,6 +173,8 @@ fn stage_outcome_str(o: StageOutcome) -> &'static str {
         StageOutcome::Ok => "ok",
         StageOutcome::Empty => "empty",
         StageOutcome::Failed => "failed",
+        // A newer outcome is not evidence of success, emptiness, or failure.
+        StageOutcome::Unknown => "unknown",
     }
 }
 
