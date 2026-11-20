@@ -72,30 +72,22 @@ arc-swap = "1"
 
 # The wire client to Brain. brain-edge is axum on top of the Brain SDK — it does
 # not re-implement the wire protocol, it reuses the SDK that already speaks it.
-# Resolved from crates.io. This was a `path` dep on a sibling checkout until
-# brain-db-sdk 0.1.0 was published; the path made every build — local, CI and
-# Docker — depend on brain-sdk sitting next to this repo on disk, and meant we
-# compiled against working-tree source rather than the artifact consumers get.
 #
 # The floor is 0.4.5 and it is REQUIRED, not cosmetic: this crate does not
-# compile against 0.4.4 at all. It needs wire surface 0.4.4 does not carry —
-# `TlsConfig` and `ClientConfig::tls`, the `Unknown` sentinels on
-# `ResolutionOutcomeWire` / `EdgeDirectionWire` / `PlanStatus` / `ReasonStatus`
-# / `EventType`, and `MemoryInspectResponse::edge_total_count` /
-# `edges_are_complete()`. Until 0.4.5 published, that surface was reachable
-# only through a `[patch.crates-io]` pointing at git.
+# compile against anything older. It needs `TlsConfig` and `ClientConfig::tls`,
+# the `Unknown` sentinels on `ResolutionOutcomeWire` / `EdgeDirectionWire` /
+# `PlanStatus` / `ReasonStatus` / `EventType`, and
+# `MemoryInspectResponse::edge_total_count` / `edges_are_complete()`.
 #
-# 0.4.4 was a required floor for the same class of reason and it still holds:
+# An older SDK is wrong on the wire as well as at compile time:
 # `SchemaUploadRequest` carries `scope` — where a declaration lands, the
 # namespace base or an overlay at the caller's own space — and the field has no
 # serde default on either side, so an older SDK encodes a SCHEMA_UPLOAD this
-# server refuses to decode at all, and `to_request()` below does not compile
-# without it.
+# server refuses to decode at all.
 #
-# A caret requirement cannot express that on its own. `"0.4.0"` means
-# >=0.4.0, <0.5.0, so it resolves into 0.4.5 anyway on the next `cargo update`
-# — a required field added inside a caret range is a source break the
-# requirement never warns about. Stating the floor is what makes the
+# A caret requirement cannot express that floor on its own: `"0.4.0"` means
+# >=0.4.0, <0.5.0, so a required field added inside the range is a source break
+# the requirement never warns about. Stating the floor is what makes the
 # dependency honest about which versions actually work.
 brain-db-sdk = "0.4.5"
 
@@ -219,22 +211,3 @@ tempfile = "3"
 # exercise the real routing + extractor stack without binding a socket.
 # Already in the lock graph via axum/tower-http, so this adds no download.
 tower = { version = "0.5", features = ["util"] }
-
-# Build against the published brain-db-sdk, which is what consumers get and
-# what CI and Docker can both resolve without brain-sdk sitting next to this
-# repo on disk.
-#
-# If you ever need to build against an unreleased SDK, patch it with
-# `[patch.crates-io]` — do not change the dependency above to a `path`. A path
-# dependency pulls a SECOND copy of the crate into the graph alongside the
-# published one other dependencies resolve, and Cargo treats those as different
-# types (the same mistake cost the playground service 38 "expected X, found a
-# different X" errors). A patch redirects every resolution at once, so exactly
-# one copy exists — and the patched version still has to satisfy the
-# requirement above, or Cargo silently ignores the patch and resolves the
-# registry copy with only a warning.
-#
-# A patch is also a release blocker. A `git+` source in the lock is a
-# dependency consumers cannot resolve from crates.io at all, so the patch must
-# be deleted and `cargo update -p brain-db-sdk` run — returning the lock's
-# source to the registry with a checksum — before this crate is published.
