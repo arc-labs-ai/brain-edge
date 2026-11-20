@@ -40,12 +40,12 @@ use crate::state::EdgeState;
 /// two scale on their own shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Plane {
-    /// Memory verbs plus credentials and the broker. The default.
+    /// Memory verbs plus BYOK credential management. The default.
     #[default]
     Both,
     /// Memory verbs only. No key material is reachable in this process.
     Data,
-    /// BYOK credential management and the broker only.
+    /// BYOK credential management only.
     Credential,
 }
 
@@ -85,7 +85,7 @@ impl Plane {
         matches!(self, Self::Both | Self::Data)
     }
 
-    /// Whether this plane serves credentials and the broker.
+    /// Whether this plane serves BYOK credential management.
     #[must_use]
     pub const fn serves_credentials(self) -> bool {
         matches!(self, Self::Both | Self::Credential)
@@ -106,10 +106,14 @@ pub fn router_for(state: EdgeState, plane: Plane) -> Router {
     if plane.serves_data() {
         r = r.merge(data_router());
     }
+    // This belongs on the data-plane router because hosted deployments merge it under their
+    // own middleware stack and never call `harden`; an engine-level layer there would vanish
+    // from the deployment carrying most traffic.
     r.with_state(state)
+        .layer(axum::middleware::from_fn(crate::metrics::request::track))
 }
 
-/// BYOK credential management plus the broker.
+/// BYOK credential management.
 ///
 /// Scoped to the caller's own namespace, which is read from Brain rather than
 /// from the request — see the handler module. Registered even without a KEK,

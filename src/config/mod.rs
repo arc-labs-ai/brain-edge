@@ -9,6 +9,10 @@ pub struct EdgeConfig {
     pub listen_addr: SocketAddr,
     /// Address of the Brain database to proxy to.
     pub brain_addr: SocketAddr,
+    /// TLS settings for the connection to Brain. `None` keeps plaintext TCP,
+    /// which is what a Brain on this host's loopback needs and what every
+    /// existing deployment uses.
+    pub brain_tls: Option<brain_db_sdk::TlsConfig>,
     /// Per-credential connection-pool width to Brain.
     pub pool_size: usize,
     /// Hard cap on distinct cached credentials (LRU-evicted over this).
@@ -74,9 +78,13 @@ impl EdgeConfig {
     /// - `BRAIN_EDGE_LISTEN`          — HTTP listen addr (default `0.0.0.0:8080`).
     /// - `BRAIN_ADDR`                 — Brain address, `ip:port` or `host:port`
     ///   (default `127.0.0.1:7878`).
+    /// - `BRAIN_EDGE_BRAIN_TLS`       — enable TLS when `1` or `true`.
+    /// - `BRAIN_EDGE_BRAIN_TLS_ROOT_PEM` — optional additional trusted-root PEM path.
+    /// - `BRAIN_EDGE_BRAIN_TLS_SERVER_NAME` — optional TLS server name override.
     /// - `BRAIN_EDGE_POOL_SIZE`       — pool width per credential (default `4`).
     /// - `BRAIN_EDGE_MAX_CREDENTIALS` — cap on cached credentials (default `256`).
     /// - `BRAIN_EDGE_IDLE_TTL_SECS`   — idle-sweep TTL in seconds (default `900`).
+    ///   Must be at least `1`.
     /// - `BRAIN_EDGE_REQUEST_TIMEOUT_SECS` — per-request timeout (default `30`).
     /// - `BRAIN_EDGE_MAX_BODY_BYTES`  — request body cap (default `1048576` = 1 MiB).
     /// - `BRAIN_EDGE_WIRE_LISTEN`     — wire-proxy listen addr, `ip:port` or
@@ -90,6 +98,23 @@ impl EdgeConfig {
     pub fn from_env() -> Result<Self, String> {
         let listen = std::env::var("BRAIN_EDGE_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into());
         let brain = std::env::var("BRAIN_ADDR").unwrap_or_else(|_| "127.0.0.1:7878".into());
+
+        let brain_tls_enabled = match std::env::var("BRAIN_EDGE_BRAIN_TLS") {
+            Err(_) => false,
+            Ok(raw) => matches!(raw.trim().to_ascii_lowercase().as_str(), "1" | "true"),
+        };
+        let additional_root_pem = match std::env::var("BRAIN_EDGE_BRAIN_TLS_ROOT_PEM") {
+            Err(_) => None,
+            Ok(path) => Some(
+                std::fs::read_to_string(&path)
+                    .map_err(|e| format!("BRAIN_EDGE_BRAIN_TLS_ROOT_PEM `{path}`: {e}"))?,
+            ),
+        };
+        let server_name = std::env::var("BRAIN_EDGE_BRAIN_TLS_SERVER_NAME").ok();
+        let brain_tls = brain_tls_enabled.then_some(brain_db_sdk::TlsConfig {
+            additional_root_pem,
+            server_name,
+        });
 
         let pool_size = parse_env::<usize>("BRAIN_EDGE_POOL_SIZE", 4)?;
         let max_credentials = parse_env::<usize>("BRAIN_EDGE_MAX_CREDENTIALS", 256)?;
@@ -114,6 +139,9 @@ impl EdgeConfig {
         if request_timeout_secs == 0 {
             return Err("BRAIN_EDGE_REQUEST_TIMEOUT_SECS must be >= 1".into());
         }
+        if idle_ttl_secs == 0 {
+            return Err("BRAIN_EDGE_IDLE_TTL_SECS must be >= 1".into());
+        }
         if max_body_bytes == 0 {
             return Err("BRAIN_EDGE_MAX_BODY_BYTES must be >= 1".into());
         }
@@ -123,6 +151,7 @@ impl EdgeConfig {
                 .parse()
                 .map_err(|e| format!("BRAIN_EDGE_LISTEN `{listen}`: {e}"))?,
             brain_addr: resolve_addr("BRAIN_ADDR", &brain)?,
+            brain_tls,
             pool_size,
             max_credentials,
             idle_ttl_secs,

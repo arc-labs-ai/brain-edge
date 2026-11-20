@@ -69,6 +69,13 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      # `--all-targets` excludes doctests, and `cargo clippy --all-targets` does
+      # not check them either, so until this step existed a doctest could stop
+      # compiling and nothing in the pipeline would notice. That is exactly how
+      # it went unnoticed in the sibling brain-eval repo.
+      - name: Doctests
+        run: cargo test --doc
+
       # --locked so a drifting transitive dep fails here rather than in the
       # release image, which builds --locked too.
       - name: Build (release, locked)

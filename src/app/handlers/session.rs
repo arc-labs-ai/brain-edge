@@ -15,7 +15,7 @@ use crate::dto::session::{
     SessionErasedDto, SessionProvisionDto, delete_session_request,
 };
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `POST /v1/sessions` — provision a session in the caller's space
@@ -28,14 +28,14 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<SessionProvisionDto>), ApiError> {
     let mut req = body.to_request();
     let ident = state.resolve(&headers).await?;
-    state.admit("create_session", &ident).await?;
+    state.admit(Op::CreateSession, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.create_session(&req).await;
     state.record(
-        "create_session",
+        Op::CreateSession,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -57,14 +57,14 @@ pub async fn list(
 ) -> Result<Json<ListSessionsResponseDto>, ApiError> {
     let mut req = query.to_request();
     let ident = state.resolve(&headers).await?;
-    state.admit("list_sessions", &ident).await?;
+    state.admit(Op::ListSessions, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.list_sessions(&req).await;
     state.record(
-        "list_sessions",
+        Op::ListSessions,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -85,14 +85,14 @@ pub async fn delete(
 ) -> Result<Json<SessionErasedDto>, ApiError> {
     let mut req = delete_session_request(id, &query);
     let ident = state.resolve(&headers).await?;
-    state.admit("delete_session", &ident).await?;
+    state.admit(Op::DeleteSession, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.delete_session(&req).await;
     state.record(
-        "delete_session",
+        Op::DeleteSession,
         &ident,
         Outcome::of(&out),
         started.elapsed(),

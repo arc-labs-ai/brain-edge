@@ -17,7 +17,7 @@ use crate::config::EdgeConfig;
 use crate::error::ApiError;
 use crate::pool::{BrainPool, BrainPoolConfig};
 use crate::port::{
-    BearerResolver, CredentialResolver, MeterEvent, MeteringSink, NoopMeter, Outcome,
+    BearerResolver, CredentialResolver, MeterEvent, MeteringSink, NoopMeter, Op, Outcome,
     RecallSignals, ResolvedCredential,
 };
 
@@ -60,6 +60,7 @@ impl EdgeState {
     ) -> Self {
         let pool = BrainPool::new(BrainPoolConfig {
             brain_addr: config.brain_addr,
+            brain_tls: config.brain_tls.clone(),
             pool_size: config.pool_size,
             max_credentials: config.max_credentials,
             idle_ttl: Duration::from_secs(config.idle_ttl_secs),
@@ -82,13 +83,10 @@ impl EdgeState {
     }
 
     /// Record one op's outcome via the injected sink (fire-and-forget).
-    pub fn record(
-        &self,
-        op: &str,
-        ident: &ResolvedCredential,
-        outcome: Outcome,
-        latency: Duration,
-    ) {
+    ///
+    /// The op is an [`Op`], not a string: the vocabulary a sink has to account
+    /// for is only knowable if nothing can report a verb outside it.
+    pub fn record(&self, op: Op, ident: &ResolvedCredential, outcome: Outcome, latency: Duration) {
         self.record_recall(op, ident, outcome, Some(latency), None, None);
     }
 
@@ -99,8 +97,8 @@ impl EdgeState {
     ///
     /// # Errors
     /// Whatever the sink decides to refuse with — a plan ceiling, typically.
-    pub async fn admit(&self, op: &str, ident: &ResolvedCredential) -> Result<(), ApiError> {
-        self.inner.meter.admit(op, ident).await
+    pub async fn admit(&self, op: Op, ident: &ResolvedCredential) -> Result<(), ApiError> {
+        self.inner.meter.admit(op.as_str(), ident).await
     }
 
     /// Whether the injected sink wants RECALL's pipeline trace on every call.
@@ -110,7 +108,7 @@ impl EdgeState {
     }
 
     /// Record an op that never reached Brain, so has no round trip to report.
-    pub fn record_untimed(&self, op: &str, ident: &ResolvedCredential, outcome: Outcome) {
+    pub fn record_untimed(&self, op: Op, ident: &ResolvedCredential, outcome: Outcome) {
         self.record_recall(op, ident, outcome, None, None, None);
     }
 
@@ -120,7 +118,7 @@ impl EdgeState {
     /// each pass a `None` that means nothing for them.
     pub fn record_recall(
         &self,
-        op: &str,
+        op: Op,
         ident: &ResolvedCredential,
         outcome: Outcome,
         latency: Option<Duration>,
@@ -130,7 +128,7 @@ impl EdgeState {
         self.inner.meter.record(&MeterEvent {
             tenant: ident.tenant.as_deref(),
             act_as: ident.act_as.as_ref(),
-            op,
+            op: op.as_str(),
             outcome,
             latency,
             recall,

@@ -8,8 +8,10 @@
 //! Both ports are trait objects held in [`crate::EdgeState`], so the router and
 //! handlers stay non-generic and the host app plugs in behavior at construction.
 
+pub mod op;
 pub mod scoped;
 
+pub use op::Op;
 pub use scoped::Scoped;
 
 use std::time::Duration;
@@ -147,7 +149,12 @@ pub struct MeterEvent<'a> {
     /// sink the effective namespace and space; `None` means the op ran as the
     /// connection itself, which the sink already knows.
     pub act_as: Option<&'a ActAs>,
-    /// The verb name (`"encode"`, `"recall"`, …).
+    /// The verb's label, from [`Op::as_str`].
+    ///
+    /// A string rather than an [`Op`] because the wire proxy also reports
+    /// through this sink, and it labels opcodes it never decodes. [`Op::ALL`]
+    /// is the HTTP surface's complete set, which is what a sink that bills per
+    /// op should walk.
     pub op: &'a str,
     /// Success or failure.
     pub outcome: Outcome,

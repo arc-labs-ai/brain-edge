@@ -15,6 +15,8 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -29,17 +31,17 @@ use brain_db_sdk::wire::types::{
     AuthOkPayload, AuthPayload, Capabilities, EdgeDirectionWire, EdgeKindWire, EncodeResponse,
     EncodeStageArtifact, EntityCreateResponse, EntityGetResponse, EntityListItem,
     EntityListResponseFrame, EntityResolveResponse, EntityView, ErrorCategoryWire, ErrorCodeWire,
-    ErrorResponse, EvidenceRefWire, ForgetResponse, GetCapabilitiesResponse, GraphEdge,
-    GraphFetchResponseFrame, GraphNode, HelloPayload, InferenceKind, InferenceStep, LinkResponse,
-    MemoryEdgeWire, MemoryInspectRequest, MemoryInspectResponse, MemoryKindWire, MemoryListItem,
-    MemoryListResponseFrame, MemoryResult, PlanResponseFrame, PlanStatus, PlanStep,
-    ReasonResponseFrame, ReasonStatus, RecallResponseFrame, RelationGetResponse,
-    RelationListFromResponseFrame, RelationListToResponseFrame, RelationTraverseResponseFrame,
-    RelationView, ResolutionOutcomeWire, SchemaGetResponse, SchemaReplaceResponse,
-    SchemaUploadResponse, SchemaValidateResponse, ServerFeatures, SpacePermissions,
-    StatementGetResponse, StatementKindWire, StatementListResponseFrame, StatementObjectWire,
-    StatementValueWire, StatementView, TransitionKind, TraversalPathWire, TraversalStepWire,
-    UnlinkResponse, WelcomePayload,
+    ErrorDetails, ErrorResponse, EvidenceRefWire, ForgetResponse, GetCapabilitiesResponse,
+    GraphEdge, GraphFetchResponseFrame, GraphNode, HelloPayload, InferenceKind, InferenceStep,
+    LinkResponse, MemoryEdgeWire, MemoryInspectRequest, MemoryInspectResponse, MemoryKindWire,
+    MemoryListItem, MemoryListResponseFrame, MemoryResult, PingRequest, PlanResponseFrame,
+    PlanStatus, PlanStep, PongResponse, ReasonResponseFrame, ReasonStatus, RecallResponseFrame,
+    RelationGetResponse, RelationListFromResponseFrame, RelationListToResponseFrame,
+    RelationTraverseResponseFrame, RelationView, ResolutionOutcomeWire, SchemaGetResponse,
+    SchemaReplaceResponse, SchemaUploadResponse, SchemaValidateResponse, ServerFeatures,
+    SpacePermissions, StatementGetResponse, StatementKindWire, StatementListResponseFrame,
+    StatementObjectWire, StatementValueWire, StatementView, TransitionKind, TraversalPathWire,
+    TraversalStepWire, UnlinkResponse, WelcomePayload,
 };
 use brain_edge::port::{CredentialResolver, MeterEvent, MeteringSink, Outcome, ResolvedCredential};
 use brain_edge::{ApiError, EdgeConfig, EdgeState};
@@ -288,6 +290,9 @@ async fn serve(mut sock: TcpStream) {
     send_frame(&mut sock, Opcode::Welcome, 0, &welcome).await;
 
     let auth_frame = read_frame(&mut sock, &mut buf).await.expect("auth");
+    if auth_frame.opcode == Opcode::Bye.as_u16() {
+        return;
+    }
     let _auth: AuthPayload = from_cbor_bytes(&auth_frame.payload).expect("decode auth");
     let auth_ok = AuthOkPayload {
         // whoami surfaces these handshake fields directly (no wire op).
@@ -326,7 +331,19 @@ async fn dispatch(sock: &mut TcpStream, f: &Frame) {
     let sid = f.stream_id;
     let op = f.opcode;
 
-    if op == Opcode::EncodeReq.as_u16() {
+    if op == Opcode::Ping.as_u16() {
+        let ping: PingRequest = from_cbor_bytes(&f.payload).expect("decode ping");
+        send_frame(
+            sock,
+            Opcode::Pong,
+            sid,
+            &PongResponse {
+                client_timestamp_unix_nanos: ping.client_timestamp_unix_nanos,
+                server_timestamp_unix_nanos: 1,
+            },
+        )
+        .await;
+    } else if op == Opcode::EncodeReq.as_u16() {
         send_frame(
             sock,
             Opcode::EncodeResp,
@@ -432,7 +449,6 @@ async fn dispatch_graph(sock: &mut TcpStream, f: &Frame) {
                 namespace: "people".into(),
                 schema_version: 2,
                 schema_document: "entity Person {}".into(),
-                source_blob: vec![],
                 uploaded_at_unix_nanos: 99,
                 validator_version: 1,
             },
@@ -567,6 +583,46 @@ async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
         return;
     }
 
+    let special = from_cbor_bytes::<MemoryInspectRequest>(&f.payload)
+        .ok()
+        .map(|r| r.memory_id);
+    if special == Some(98) {
+        send_frame(
+            sock,
+            Opcode::Error,
+            f.stream_id,
+            &ErrorResponse {
+                code: ErrorCodeWire::RateLimited,
+                category: ErrorCategoryWire::ResourceExhausted,
+                message: "memory inspection is rate limited".into(),
+                details: None,
+                retry_after_ms: Some(1500),
+            },
+        )
+        .await;
+        return;
+    }
+    if special == Some(97) {
+        send_frame(
+            sock,
+            Opcode::Error,
+            f.stream_id,
+            &ErrorResponse {
+                code: ErrorCodeWire::InvalidArgument,
+                category: ErrorCategoryWire::Validation,
+                message: "text length does not match the memory schema".into(),
+                details: Some(ErrorDetails {
+                    field: Some("text".into()),
+                    expected: Some("384".into()),
+                    actual: Some("768".into()),
+                }),
+                retry_after_ms: None,
+            },
+        )
+        .await;
+        return;
+    }
+
     send_frame(
         sock,
         Opcode::MemoryInspectResp,
@@ -602,6 +658,10 @@ async fn dispatch_memory_inspect(sock: &mut TcpStream, f: &Frame) {
                     annotation: None,
                 },
             ],
+            // A whole view: the total matches what the frame carries, so the
+            // route has nothing to flag as cut.
+            edge_total_count: Some(2),
+            edges_truncated: false,
         },
     )
     .await;
@@ -877,6 +937,24 @@ async fn spawn_mock() -> std::net::SocketAddr {
     addr
 }
 
+/// Spawn a mock Brain and count accepted sockets for pool and readiness tests.
+async fn spawn_counting_mock() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&accepted);
+    tokio::spawn(async move {
+        loop {
+            let Ok((sock, _peer)) = listener.accept().await else {
+                break;
+            };
+            count.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(serve(sock));
+        }
+    });
+    (addr, accepted)
+}
+
 // --- harness ---------------------------------------------------------------
 
 fn config(brain_addr: std::net::SocketAddr) -> EdgeConfig {
@@ -892,6 +970,8 @@ fn config(brain_addr: std::net::SocketAddr) -> EdgeConfig {
         wire_listen_addr: None,
         wire_rate_capacity: 0,
         wire_rate_refill_per_sec: 0,
+        // The mock Brain speaks the plain wire protocol.
+        brain_tls: None,
     }
 }
 
@@ -936,7 +1016,183 @@ async fn send(
     (status, json)
 }
 
+async fn send_with_headers(
+    state: EdgeState,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (StatusCode, HeaderMap, serde_json::Value) {
+    let mut req = Request::builder().method(method).uri(path);
+    if body.is_some() {
+        req = req.header("content-type", "application/json");
+    }
+    let req = req
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_owned())))
+        .expect("build request");
+    let resp = brain_edge::app::router(state)
+        .oneshot(req)
+        .await
+        .expect("router response");
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .expect("read body");
+    let json = serde_json::from_slice(&bytes).expect("body is json");
+    (status, headers, json)
+}
+
+#[tokio::test]
+async fn metrics_router_exposes_all_families() {
+    // The registry is process-global and integration tests run in parallel, so this checks
+    // family presence rather than a counter value that another test may change concurrently.
+    let response = brain_edge::metrics::metrics_router()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("metrics response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()["content-type"],
+        "text/plain; version=0.0.4; charset=utf-8"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    let body = String::from_utf8(body.into()).expect("prometheus text");
+    for family in [
+        "brain_edge_build_info",
+        "brain_edge_up",
+        "brain_edge_requests_in_flight",
+        "brain_edge_requests_total",
+        "brain_edge_request_duration_seconds",
+        "brain_edge_engine_calls_total",
+        "brain_edge_engine_call_duration_seconds",
+        "brain_edge_pool_acquisitions_total",
+        "brain_edge_pool_acquire_duration_seconds",
+        "brain_edge_pool_init_collapsed_total",
+        "brain_edge_credential_cache_size",
+        "brain_edge_credential_cache_evictions_total",
+    ] {
+        assert!(body.contains(family), "missing {family}");
+    }
+}
+
+#[tokio::test]
+async fn data_plane_request_publishes_route_metrics() {
+    let (state, _) = state_and_meter().await;
+    let before = brain_edge::metrics::global().snapshot();
+    let (status, _) = send(state, "GET", "/v1/whoami", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let after = brain_edge::metrics::global().snapshot();
+    let route = brain_edge::metrics::request::route_index("/v1/whoami");
+    let status_index = brain_edge::metrics::StatusClass::Success.idx();
+    let cell = route * brain_edge::metrics::request::STATUS_CLASS_LABELS.len() + status_index;
+    assert!(after.request.totals[cell] > before.request.totals[cell]);
+    assert!(after.request.durations[route].count > before.request.durations[route].count);
+}
+
+#[tokio::test]
+async fn readiness_probe_publishes_engine_probe_metric() {
+    let (state, _) = state_and_meter().await;
+    let before = brain_edge::metrics::global().snapshot();
+    assert!(state.pool().probe(Duration::from_secs(2)).await);
+    let after = brain_edge::metrics::global().snapshot();
+    let index = brain_edge::metrics::EngineCallKind::Probe.idx()
+        * brain_edge::metrics::ENGINE_CALL_OUTCOME_LABELS.len()
+        + brain_edge::metrics::EngineCallOutcome::Ok.idx();
+    assert!(after.engine.calls[index] > before.engine.calls[index]);
+}
+
 // --- the tests -------------------------------------------------------------
+
+#[tokio::test]
+async fn per_credential_cold_start_collapses_to_one_pool() {
+    // Without the per-key latch, N concurrent first requests open N * pool_size
+    // sockets and handshakes against Brain in one burst on a cold deploy.
+    let (brain_addr, accepted) = spawn_counting_mock().await;
+    let pool = Arc::new(brain_edge::BrainPool::new(brain_edge::BrainPoolConfig {
+        brain_addr,
+        pool_size: 1,
+        max_credentials: 16,
+        idle_ttl: Duration::from_secs(900),
+        // The mocks speak the plain wire protocol.
+        brain_tls: None,
+    }));
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let pool = Arc::clone(&pool);
+        tasks.push(tokio::spawn(
+            async move { pool.client_for("same-key").await },
+        ));
+    }
+    for task in tasks {
+        assert!(task.await.expect("join").is_ok());
+    }
+    assert_eq!(accepted.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn readiness_proves_serving_not_accepting() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let bare_addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        // Held, never read: keeping each accepted socket alive is the point —
+        // this listener accepts and then says nothing, which is the state the
+        // old TCP-only probe called ready. Dropping them would close the
+        // connections and dissolve the scenario.
+        #[allow(clippy::collection_is_never_read)]
+        let mut sockets = Vec::new();
+        loop {
+            let Ok((sock, _peer)) = listener.accept().await else {
+                break;
+            };
+            sockets.push(sock);
+        }
+    });
+    // The old TCP-only probe returned true for exactly this listener.
+    let bare_pool = brain_edge::BrainPool::new(brain_edge::BrainPoolConfig {
+        brain_addr: bare_addr,
+        pool_size: 1,
+        max_credentials: 16,
+        idle_ttl: Duration::from_secs(900),
+        // The mocks speak the plain wire protocol.
+        brain_tls: None,
+    });
+    assert!(!bare_pool.probe(Duration::from_millis(100)).await);
+
+    let brain_addr = spawn_mock().await;
+    let mock_pool = brain_edge::BrainPool::new(brain_edge::BrainPoolConfig {
+        brain_addr,
+        pool_size: 1,
+        max_credentials: 16,
+        idle_ttl: Duration::from_secs(900),
+        // The mocks speak the plain wire protocol.
+        brain_tls: None,
+    });
+    assert!(mock_pool.probe(Duration::from_secs(1)).await);
+}
+
+#[tokio::test]
+async fn readiness_reuses_a_live_connection() {
+    let (brain_addr, accepted) = spawn_counting_mock().await;
+    let pool = brain_edge::BrainPool::new(brain_edge::BrainPoolConfig {
+        brain_addr,
+        pool_size: 1,
+        max_credentials: 16,
+        idle_ttl: Duration::from_secs(900),
+        // The mocks speak the plain wire protocol.
+        brain_tls: None,
+    });
+    assert!(pool.client_for("same-key").await.is_ok());
+    let before = accepted.load(Ordering::Relaxed);
+    assert!(pool.probe(Duration::from_secs(1)).await);
+    assert_eq!(accepted.load(Ordering::Relaxed), before);
+}
 
 #[tokio::test]
 async fn whoami_reflects_handshake_metadata() {
@@ -1169,7 +1425,32 @@ async fn memory_inspect_returns_artifact_bundle() {
     // Omitted, not null, when there is no annotation.
     assert!(edges[1].get("annotation").is_none());
 
+    // The route carries the engine's true edge total and says plainly whether
+    // the view was cut, so a caller never mistakes a capped list for the set.
+    assert_eq!(body["edge_total_count"], 2);
+    assert_eq!(body["edges_truncated"], false);
+
     assert_eq!(meter.ops(), vec!["memory_inspect"]);
+}
+
+#[tokio::test]
+async fn memory_inspect_rate_limit_returns_retry_hint() {
+    let (state, _meter) = state_and_meter().await;
+    let (status, headers, body) =
+        send_with_headers(state, "GET", "/v1/memories/98/inspect", None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "rate_limited");
+    assert_eq!(headers["retry-after"], "2");
+}
+
+#[tokio::test]
+async fn memory_inspect_invalid_argument_returns_field_error() {
+    let (state, _meter) = state_and_meter().await;
+    let (status, _headers, body) =
+        send_with_headers(state, "GET", "/v1/memories/97/inspect", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["errors"][0]["field"], "text");
+    assert_eq!(body["error"]["engine_code"], "invalid_argument");
 }
 
 #[tokio::test]

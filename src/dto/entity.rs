@@ -96,6 +96,9 @@ impl From<EntityResolveResponse> for ResolveEntityResponseDto {
             ResolutionOutcomeWire::Created => ("created", true),
             ResolutionOutcomeWire::Ambiguous => ("ambiguous", false),
             ResolutionOutcomeWire::NotFound => ("not_found", false),
+            // A newer server's outcome is not evidence of any known outcome
+            // or of a bound entity.
+            ResolutionOutcomeWire::Unknown => ("unknown", false),
         };
         Self {
             outcome,

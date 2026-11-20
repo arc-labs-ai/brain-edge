@@ -16,7 +16,7 @@ use crate::dto::relation::{
     get_request_from, split_from_frames, split_to_frames,
 };
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `GET /v1/relations/{id}` — fetch one relation by id.
@@ -28,13 +28,18 @@ pub async fn get(
 ) -> Result<Json<RelationDetailDto>, ApiError> {
     let mut req = get_request_from(&id, &query).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("get_relation", &ident).await?;
+    state.admit(Op::GetRelation, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.get_relation(&req).await;
-    state.record("get_relation", &ident, Outcome::of(&out), started.elapsed());
+    state.record(
+        Op::GetRelation,
+        &ident,
+        Outcome::of(&out),
+        started.elapsed(),
+    );
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
 
     let names = entity_names(&client, RelationDetailDto::entity_ids(&resp.relation)).await;
@@ -53,7 +58,7 @@ pub async fn list(
 ) -> Result<Json<ListRelationsResponseDto>, ApiError> {
     let side = query.side().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("list_relations", &ident).await?;
+    state.admit(Op::ListRelations, &ident).await?;
     let client = state.client_for(&ident.credential).await?;
 
     // The streamed frames rather than the flattened views: the resume cursor
@@ -66,7 +71,7 @@ pub async fn list(
             let started = Instant::now();
             let out = client.list_relations_from_frames(&req).await;
             state.record(
-                "list_relations",
+                Op::ListRelations,
                 &ident,
                 Outcome::of(&out),
                 started.elapsed(),
@@ -79,7 +84,7 @@ pub async fn list(
             let started = Instant::now();
             let out = client.list_relations_to_frames(&req).await;
             state.record(
-                "list_relations",
+                Op::ListRelations,
                 &ident,
                 Outcome::of(&out),
                 started.elapsed(),
@@ -107,14 +112,14 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<CreateRelationResponseDto>), ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("create_relation", &ident).await?;
+    state.admit(Op::CreateRelation, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.create_relation(&req).await;
     state.record(
-        "create_relation",
+        Op::CreateRelation,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -140,14 +145,14 @@ pub async fn supersede(
 ) -> Result<(StatusCode, Json<SupersedeRelationResponseDto>), ApiError> {
     let mut req = body.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("supersede_relation", &ident).await?;
+    state.admit(Op::SupersedeRelation, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.supersede_relation(&req).await;
     state.record(
-        "supersede_relation",
+        Op::SupersedeRelation,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -168,14 +173,14 @@ pub async fn tombstone(
 ) -> Result<Json<TombstoneRelationResponseDto>, ApiError> {
     let mut req = query.to_request(&id).map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("tombstone_relation", &ident).await?;
+    state.admit(Op::TombstoneRelation, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.tombstone_relation(&req).await;
     state.record(
-        "tombstone_relation",
+        Op::TombstoneRelation,
         &ident,
         Outcome::of(&out),
         started.elapsed(),

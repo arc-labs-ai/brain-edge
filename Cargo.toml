@@ -59,7 +59,12 @@ serde_json = "1"
 # implement a trait it does not name.
 futures-core = "0.3"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    # JSON lines for production log aggregation.
+    "json",
+] }
 async-trait = "0.1"
 # Lock-free ArcSwap for the per-credential pool cache's hot path. Already a
 # transitive dep via the SDK; declared directly because BrainPool uses it.
@@ -207,9 +212,12 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 
-# No `[patch.crates-io]`. The edge builds against the published brain-db-sdk,
-# which is what consumers get and what CI and Docker can both resolve without
-# brain-sdk sitting next to this repo on disk.
+# TEMPORARY `[patch.crates-io]`, to be deleted when the next brain-db-sdk
+# publishes. See the block at the bottom of this file.
+#
+# The rule this follows: build against the published brain-db-sdk, which is what
+# consumers get and what CI and Docker can both resolve without brain-sdk
+# sitting next to this repo on disk.
 #
 # If you ever need to build against an unreleased SDK, patch it — do not change
 # the dependency to a `path`. A path dependency pulls a SECOND copy of the crate
@@ -219,3 +227,38 @@ tower = { version = "0.5", features = ["util"] }
 # resolution at once, so exactly one copy exists — and its version has to
 # satisfy the requirement above, or Cargo silently ignores it and resolves the
 # registry copy with only a warning.
+
+# ---------------------------------------------------------------------------
+# TEMPORARY: build against the unreleased SDK, from git rather than from disk.
+#
+# This code needs wire surface that brain-db-sdk 0.4.4 does not have:
+# `TlsConfig` and `ClientConfig::tls`, the `Unknown` sentinels on
+# `ResolutionOutcomeWire` / `EdgeDirectionWire` / `PlanStatus` / `ReasonStatus`
+# / `EventType`, and `MemoryInspectResponse::edge_total_count` /
+# `edges_are_complete()`. Without a patch the crate does not compile at all, so
+# CI cannot be green until the SDK publishes.
+#
+# A `rev`, not a `branch`: a branch moves, and a dependency that silently
+# changes under a `--locked` build is the thing a lockfile exists to prevent.
+# The pinned commit is the head of arc-labs-ai/brain-sdk#27, whose own CI is
+# green. The repository is public, so CI and the Docker build resolve it over
+# HTTPS with no credential — which is the property a `.cargo/config.toml` patch
+# to a sibling checkout does not have, and why that local-only file is not what
+# makes CI pass.
+#
+# `patch`, not a `path` or a `git` dependency on the line above: a patch
+# redirects every resolution at once, so exactly one copy of the crate exists in
+# the graph. The patched version (0.4.4) still has to satisfy the requirement
+# above, or Cargo ignores the patch and resolves the registry copy with a
+# warning rather than an error.
+#
+# TO RETIRE THIS, in order:
+#   1. Merge arc-labs-ai/brain-sdk#27 and let release-please publish the SDK.
+#   2. Raise `brain-db-sdk` above to the published version.
+#   3. Delete this block, and any local `.cargo/config.toml` patch.
+#   4. `cargo update -p brain-db-sdk` — the lock's `source` must go back to
+#      `registry+https://github.com/rust-lang/crates.io-index` with a checksum.
+#      A `git+` source in a published release is a dependency consumers cannot
+#      resolve from crates.io at all.
+[patch.crates-io]
+brain-db-sdk = { git = "https://github.com/arc-labs-ai/brain-sdk", rev = "ecacffdbe62a024ece132a46c03da1e01e1e67c3" }

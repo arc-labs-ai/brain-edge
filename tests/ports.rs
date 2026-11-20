@@ -28,7 +28,9 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
-use brain_edge::port::{CredentialResolver, MeterEvent, MeteringSink, Outcome, ResolvedCredential};
+use brain_edge::port::{
+    CredentialResolver, MeterEvent, MeteringSink, Op, Outcome, ResolvedCredential,
+};
 use brain_edge::{ApiError, EdgeConfig, EdgeState};
 use tower::ServiceExt;
 
@@ -404,25 +406,20 @@ async fn an_unauthenticated_request_is_never_metered() {
 
 #[tokio::test]
 async fn the_route_table_covers_the_whole_surface() {
-    // This assertion used to compare `ROUTES.len()` against a constant written
-    // directly above it. Both were hand-maintained, so adding a route to the
-    // router changed neither and the test stayed green: the BYOK work added six
-    // method+path combos and this never noticed, which left the resolver and
-    // metering guarantees with a six-route hole. The comment claimed "adding a
-    // route forces a deliberate update" — it did not.
+    // `ROUTES` is what the resolver and metering guarantees above iterate, so
+    // a route the router serves but this table omits is a hole in both. The
+    // table cannot defend itself, so the router's own source is read and
+    // counted: `include_str!` resolves at compile time relative to this file.
     //
-    // So count the router's own registrations. `include_str!` resolves at
-    // compile time relative to this file, and the count is a plain substring
-    // tally rather than a parse, which is enough: every registration in
-    // `app::router` is a literal `.route(` call.
+    // Two counts, because they catch different mistakes. `.route(` tallies
+    // PATHS, which catches a new endpoint. The method constructors tally
+    // method+PATH COMBOS, which catches the case a path count cannot see — a
+    // `.post(...)` chained onto a path that already had a `.get(...)`. Both
+    // are substring tallies rather than a parse, which is enough while every
+    // registration in `app::router` is written as a literal call.
     //
-    // What this catches: a new path reaching the router without reaching either
-    // table. What it does not: a new METHOD chained onto a path already
-    // registered (`.post(...)` added beside an existing `.get(...)`), since the
-    // `.route(` count is unchanged. The combo assertion below is still
-    // hand-stated for that reason — it is a second pair of eyes, not a tripwire.
-    // Both counts up front: clippy's `items_after_statements` (denied here) will
-    // not have a `const` introduced partway down a function body.
+    // Both consts up front: clippy's `items_after_statements` (denied here)
+    // will not have a `const` introduced partway down a function body.
     const REGISTERED_PATHS: usize = 42;
     const SERVED_COMBOS: usize = 58;
 
@@ -433,6 +430,19 @@ async fn the_route_table_covers_the_whole_surface() {
         "app::router registers {registrations} paths but this test expects \
          {REGISTERED_PATHS}. A path was added or removed: add it to ROUTES and update \
          this count."
+    );
+
+    // Every method a path is served on is one of these constructors, so their
+    // total is the number of method+path combos the router answers.
+    let combos: usize = ["get(", "post(", "put(", "delete(", "patch("]
+        .iter()
+        .map(|ctor| router_src.matches(ctor).count())
+        .sum();
+    assert_eq!(
+        combos, SERVED_COMBOS,
+        "app::router serves {combos} method+path combos but this test expects \
+         {SERVED_COMBOS}. A method was added to or removed from a path: add it \
+         to ROUTES and update this count."
     );
 
     assert_eq!(
@@ -528,8 +538,8 @@ async fn a_resolved_tenant_reaches_the_sink() {
         .resolve(&HeaderMap::new())
         .await
         .expect("resolver accepts");
-    state.record("encode", &ident, Outcome::Ok, Duration::from_millis(7));
-    state.record("recall", &ident, Outcome::Err, Duration::from_millis(3));
+    state.record(Op::Encode, &ident, Outcome::Ok, Duration::from_millis(7));
+    state.record(Op::Recall, &ident, Outcome::Err, Duration::from_millis(3));
 
     assert_eq!(
         meter.events(),
@@ -559,7 +569,7 @@ async fn the_self_host_default_meters_nothing_and_forwards_the_bearer() {
     );
 
     // No panic, no state: the default sink is a no-op by construction.
-    state.record("encode", &ident, Outcome::Ok, Duration::from_millis(1));
+    state.record(Op::Encode, &ident, Outcome::Ok, Duration::from_millis(1));
 }
 
 /// Every wire request that carries `act_as` implements [`Scoped`].

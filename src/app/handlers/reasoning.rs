@@ -9,7 +9,7 @@ use axum::response::Json;
 use crate::app::extract::ApiJson;
 use crate::dto::reasoning::{PlanBody, PlanResponseDto, ReasonBody, ReasonResponseDto};
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `POST /v1/plan` — plan a path from a start state to a goal state.
@@ -20,7 +20,7 @@ pub async fn plan(
 ) -> Result<Json<PlanResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("plan", &ident).await?;
+    state.admit(Op::Plan, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
     let started = Instant::now();
@@ -30,7 +30,7 @@ pub async fn plan(
     // budget or cancelled — along with the trace the request may have asked
     // for. The steps are still flattened, one layer up.
     let out = client.plan_frames(&req).await;
-    state.record("plan", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Plan, &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(PlanResponseDto::from_frames(frames)))
 }
@@ -43,14 +43,14 @@ pub async fn reason(
 ) -> Result<Json<ReasonResponseDto>, ApiError> {
     let mut req = body.to_request().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("reason", &ident).await?;
+    state.admit(Op::Reason, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
     let started = Instant::now();
     // See the note in `plan`: the terminal status and the trace ride the final
     // frame, and the flattening client hands back neither.
     let out = client.reason_frames(&req).await;
-    state.record("reason", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::Reason, &ident, Outcome::of(&out), started.elapsed());
     let frames = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(ReasonResponseDto::from_frames(frames)))
 }

@@ -14,7 +14,7 @@ use axum::response::Json;
 use crate::app::extract::ApiJson;
 use crate::dto::query::{QueryBody, QueryExplainResponseDto, QueryTraceResponseDto};
 use crate::error::ApiError;
-use crate::port::Outcome;
+use crate::port::{Op, Outcome};
 use crate::state::EdgeState;
 
 /// `POST /v1/query/explain` — the plan Brain would run, and its estimated
@@ -26,14 +26,14 @@ pub async fn explain(
 ) -> Result<Json<QueryExplainResponseDto>, ApiError> {
     let mut req = body.to_explain().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("query_explain", &ident).await?;
+    state.admit(Op::QueryExplain, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.query_explain(&req).await;
     state.record(
-        "query_explain",
+        Op::QueryExplain,
         &ident,
         Outcome::of(&out),
         started.elapsed(),
@@ -51,13 +51,13 @@ pub async fn trace(
 ) -> Result<Json<QueryTraceResponseDto>, ApiError> {
     let mut req = body.to_trace().map_err(ApiError::bad_request)?;
     let ident = state.resolve(&headers).await?;
-    state.admit("query_trace", &ident).await?;
+    state.admit(Op::QueryTrace, &ident).await?;
     ident.scope(&mut req);
     let client = state.client_for(&ident.credential).await?;
 
     let started = Instant::now();
     let out = client.query_trace(&req).await;
-    state.record("query_trace", &ident, Outcome::of(&out), started.elapsed());
+    state.record(Op::QueryTrace, &ident, Outcome::of(&out), started.elapsed());
     let resp = out.map_err(|e| ApiError::from_brain(&e))?;
     Ok(Json(QueryTraceResponseDto::from(resp)))
 }
