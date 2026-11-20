@@ -132,8 +132,9 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "brain-db-sdk"
-version = "0.4.4"
-source = "git+https://github.com/arc-labs-ai/brain-sdk?rev=ecacffdbe62a024ece132a46c03da1e01e1e67c3#ecacffdbe62a024ece132a46c03da1e01e1e67c3"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "655459c28a58a3894832a635dd035f91f51d1be3b233e8a72e791b60a3512da0"
 dependencies = [
  "bytes",
  "ciborium",

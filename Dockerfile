@@ -5,11 +5,6 @@
 # Build context is this crate:
 #
 #       docker build -t brain-edge:latest .
-#
-# It used to have to be the parent directory, because Cargo.toml carried a path
-# dependency on a sibling checkout (`brain-db-sdk = { path = "../brain-sdk/rust" }`)
-# that a context scoped here could not see. brain-db-sdk is on crates.io now, so
-# the dependency resolves from the registry and the context is just this crate.
 
 # ---- builder ---------------------------------------------------------------
 FROM rust:1-bookworm AS builder
