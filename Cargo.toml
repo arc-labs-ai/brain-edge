@@ -77,18 +77,27 @@ arc-swap = "1"
 # Docker — depend on brain-sdk sitting next to this repo on disk, and meant we
 # compiled against working-tree source rather than the artifact consumers get.
 #
-# The floor is 0.4.4 and it is REQUIRED, not cosmetic. `SchemaUploadRequest`
-# carries `scope` — where a declaration lands, the namespace base or an overlay
-# at the caller's own space — and the field has no serde default on either
-# side: an older SDK encodes a SCHEMA_UPLOAD this server refuses to decode at
-# all, and `to_request()` below does not compile without it.
+# The floor is 0.4.5 and it is REQUIRED, not cosmetic: this crate does not
+# compile against 0.4.4 at all. It needs wire surface 0.4.4 does not carry —
+# `TlsConfig` and `ClientConfig::tls`, the `Unknown` sentinels on
+# `ResolutionOutcomeWire` / `EdgeDirectionWire` / `PlanStatus` / `ReasonStatus`
+# / `EventType`, and `MemoryInspectResponse::edge_total_count` /
+# `edges_are_complete()`. Until 0.4.5 published, that surface was reachable
+# only through a `[patch.crates-io]` pointing at git.
+#
+# 0.4.4 was a required floor for the same class of reason and it still holds:
+# `SchemaUploadRequest` carries `scope` — where a declaration lands, the
+# namespace base or an overlay at the caller's own space — and the field has no
+# serde default on either side, so an older SDK encodes a SCHEMA_UPLOAD this
+# server refuses to decode at all, and `to_request()` below does not compile
+# without it.
 #
 # A caret requirement cannot express that on its own. `"0.4.0"` means
-# >=0.4.0, <0.5.0, so it resolves into 0.4.4 anyway on the next `cargo update`
+# >=0.4.0, <0.5.0, so it resolves into 0.4.5 anyway on the next `cargo update`
 # — a required field added inside a caret range is a source break the
 # requirement never warns about. Stating the floor is what makes the
 # dependency honest about which versions actually work.
-brain-db-sdk = "0.4.4"
+brain-db-sdk = "0.4.5"
 
 # ---------------------------------------------------------------------------
 # Lints.
@@ -211,54 +220,21 @@ tempfile = "3"
 # Already in the lock graph via axum/tower-http, so this adds no download.
 tower = { version = "0.5", features = ["util"] }
 
-
-# TEMPORARY `[patch.crates-io]`, to be deleted when the next brain-db-sdk
-# publishes. See the block at the bottom of this file.
+# Build against the published brain-db-sdk, which is what consumers get and
+# what CI and Docker can both resolve without brain-sdk sitting next to this
+# repo on disk.
 #
-# The rule this follows: build against the published brain-db-sdk, which is what
-# consumers get and what CI and Docker can both resolve without brain-sdk
-# sitting next to this repo on disk.
-#
-# If you ever need to build against an unreleased SDK, patch it — do not change
-# the dependency to a `path`. A path dependency pulls a SECOND copy of the crate
-# into the graph alongside the published one other dependencies resolve, and
-# Cargo treats those as different types (the same mistake cost the playground
-# service 38 "expected X, found a different X" errors). A patch redirects every
-# resolution at once, so exactly one copy exists — and its version has to
-# satisfy the requirement above, or Cargo silently ignores it and resolves the
+# If you ever need to build against an unreleased SDK, patch it with
+# `[patch.crates-io]` — do not change the dependency above to a `path`. A path
+# dependency pulls a SECOND copy of the crate into the graph alongside the
+# published one other dependencies resolve, and Cargo treats those as different
+# types (the same mistake cost the playground service 38 "expected X, found a
+# different X" errors). A patch redirects every resolution at once, so exactly
+# one copy exists — and the patched version still has to satisfy the
+# requirement above, or Cargo silently ignores the patch and resolves the
 # registry copy with only a warning.
-
-# ---------------------------------------------------------------------------
-# TEMPORARY: build against the unreleased SDK, from git rather than from disk.
 #
-# This code needs wire surface that brain-db-sdk 0.4.4 does not have:
-# `TlsConfig` and `ClientConfig::tls`, the `Unknown` sentinels on
-# `ResolutionOutcomeWire` / `EdgeDirectionWire` / `PlanStatus` / `ReasonStatus`
-# / `EventType`, and `MemoryInspectResponse::edge_total_count` /
-# `edges_are_complete()`. Without a patch the crate does not compile at all, so
-# CI cannot be green until the SDK publishes.
-#
-# A `rev`, not a `branch`: a branch moves, and a dependency that silently
-# changes under a `--locked` build is the thing a lockfile exists to prevent.
-# The pinned commit is the head of arc-labs-ai/brain-sdk#27, whose own CI is
-# green. The repository is public, so CI and the Docker build resolve it over
-# HTTPS with no credential — which is the property a `.cargo/config.toml` patch
-# to a sibling checkout does not have, and why that local-only file is not what
-# makes CI pass.
-#
-# `patch`, not a `path` or a `git` dependency on the line above: a patch
-# redirects every resolution at once, so exactly one copy of the crate exists in
-# the graph. The patched version (0.4.4) still has to satisfy the requirement
-# above, or Cargo ignores the patch and resolves the registry copy with a
-# warning rather than an error.
-#
-# TO RETIRE THIS, in order:
-#   1. Merge arc-labs-ai/brain-sdk#27 and let release-please publish the SDK.
-#   2. Raise `brain-db-sdk` above to the published version.
-#   3. Delete this block, and any local `.cargo/config.toml` patch.
-#   4. `cargo update -p brain-db-sdk` — the lock's `source` must go back to
-#      `registry+https://github.com/rust-lang/crates.io-index` with a checksum.
-#      A `git+` source in a published release is a dependency consumers cannot
-#      resolve from crates.io at all.
-[patch.crates-io]
-brain-db-sdk = { git = "https://github.com/arc-labs-ai/brain-sdk", rev = "ecacffdbe62a024ece132a46c03da1e01e1e67c3" }
+# A patch is also a release blocker. A `git+` source in the lock is a
+# dependency consumers cannot resolve from crates.io at all, so the patch must
+# be deleted and `cargo update -p brain-db-sdk` run — returning the lock's
+# source to the registry with a checksum — before this crate is published.
